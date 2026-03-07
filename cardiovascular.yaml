@@ -1,0 +1,94 @@
+# Cardiovascular TA Pack
+
+concept_synonyms:
+  index_date:
+    - "index event"
+    - "qualifying event"
+    - "first qualifying diagnosis"
+    - "hospitalization date"
+    - "procedure date"
+    - "cohort entry"
+    - "MI date"
+    - "ACS event"
+
+  follow_up_end:
+    - "end of follow-up"
+    - "data cutoff"
+    - "death"
+    - "disenrollment"
+    - "end of study"
+    - "administrative censoring"
+
+  primary_endpoint:
+    - "MACE"
+    - "major adverse cardiovascular event"
+    - "primary outcome"
+    - "composite endpoint"
+    - "cardiovascular death"
+    - "heart failure hospitalization"
+
+  eligibility_inclusion:
+    - "inclusion criteria"
+    - "qualifying diagnosis"
+    - "index diagnosis"
+    - "ICD code"
+    - "qualifying hospitalization"
+
+  censoring_rules:
+    - "censoring"
+    - "competing risk"
+    - "death"
+    - "loss to follow-up"
+    - "end of enrollment"
+
+ambiguity_hotspots:
+  - concept: index_date
+    severity: high
+    warning: >
+      CV protocols often allow multiple qualifying events (MI, ACS, HF hospitalization).
+      Confirm whether first event only or most recent event defines index date.
+      Confirm whether inpatient vs outpatient diagnosis codes both qualify.
+
+  - concept: primary_endpoint
+    severity: high
+    warning: >
+      MACE definitions vary by study — always confirm component events.
+      Common variants: 3-point MACE (CV death, MI, stroke) vs 4-point vs expanded.
+      Check appendix for ICD code lists for each component.
+
+  - concept: censoring_rules
+    severity: medium
+    warning: >
+      Competing risk handling varies. Confirm whether death is a competing event
+      or censoring event for non-fatal outcomes. Check if cause-specific or
+      subdistribution hazard model is specified.
+
+expected_concepts:
+  - index_date
+  - follow_up_start
+  - follow_up_end
+  - censoring_rules
+  - enrollment_window
+  - baseline_window
+  - primary_endpoint
+  - secondary_endpoint
+  - eligibility_inclusion
+  - eligibility_exclusion
+  - data_source
+  - analysis_population
+  - key_covariate
+
+section_priority:
+  index_date:
+    - "Study Design"
+    - "Patient Selection"
+    - "Eligibility"
+  primary_endpoint:
+    - "Endpoints"
+    - "Outcome Definitions"
+    - "Statistical Analysis"
+    - "Appendix"
+  censoring_rules:
+    - "Statistical Analysis"
+    - "Censoring"
+    - "Competing Risks"

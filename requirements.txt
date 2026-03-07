@@ -1,0 +1,57 @@
+# ── Core ─────────────────────────────────────────────────────────────────────
+pydantic>=2.5
+pyyaml>=6.0
+
+# ── Document parsing ──────────────────────────────────────────────────────────
+docling>=2.0                    # Primary parser — layout, tables, reading order
+pymupdf>=1.23                   # Fallback parser if docling unavailable
+
+# ── Embeddings + Reranker ─────────────────────────────────────────────────────
+FlagEmbedding>=1.2              # BGE-M3 dense+sparse + bge-reranker-v2-m3
+# Models auto-downloaded on first use from HuggingFace
+
+# ── Vector store ──────────────────────────────────────────────────────────────
+qdrant-client>=1.7              # Local persistent hybrid search
+
+# ── Model serving (OpenAI-compatible client → local vLLM) ────────────────────
+openai>=1.12                    # Client library — points to local vLLM server
+
+# ── Workflow orchestration ────────────────────────────────────────────────────
+prefect>=2.16                   # Flow/task orchestration, retries, state tracking
+
+# ── Output ────────────────────────────────────────────────────────────────────
+openpyxl>=3.1                   # Excel workbook writer
+
+# ── Review UI ─────────────────────────────────────────────────────────────────
+streamlit>=1.32                 # Evidence review interface
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+# (no extra deps — uses stdlib csv + pydantic)
+
+# ── Numeric (reranker fallback) ───────────────────────────────────────────────
+numpy>=1.24
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUNTIME SETUP (not pip — run separately)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 1. Install vLLM:
+#    pip install vllm
+#
+# 2. Download models (HuggingFace — one-time):
+#    huggingface-cli download Qwen/Qwen3-8B-Instruct
+#    huggingface-cli download Qwen/Qwen3-30B-A3B-Instruct  # adjudicator
+#    huggingface-cli download BAAI/bge-m3
+#    huggingface-cli download BAAI/bge-reranker-v2-m3
+#
+# 3. Start vLLM server (before running pipeline):
+#    vllm serve Qwen/Qwen3-8B-Instruct \
+#        --host 0.0.0.0 --port 8000 \
+#        --max-model-len 32768 \
+#        --enable-prefix-caching \
+#        --dtype auto
+#
+# 4. Laptop alternative (if vLLM too heavy):
+#    ollama pull qwen2.5:14b
+#    Set env: VLLM_BASE_URL=http://localhost:11434/v1
+#    Note: structured outputs less reliable with Ollama
