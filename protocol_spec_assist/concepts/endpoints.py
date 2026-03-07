@@ -13,8 +13,8 @@ from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
 
-FINDER_VERSION = "0.1.0"
-PROMPT_VERSION = "0.1.0"
+FINDER_VERSION = "0.2.0"
+PROMPT_VERSION = "0.2.0"
 CONFIDENCE_THRESHOLD = 0.65
 
 
@@ -93,21 +93,23 @@ def find_follow_up_end(
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_FUE)
     context = _build_context(chunks, ta_warning, protocol_id)
 
-    extraction, model_used = client.extract(
+    result = client.extract(
         system_prompt=SYSTEM_PROMPT_FUE,
         user_prompt=context,
         schema=FollowUpEndExtraction,
         use_adjudicator=False,
     )
+    extraction, model_used = result.parsed, result.model_used
 
     used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        extraction, model_used = client.extract(
+        result = client.extract(
             system_prompt=SYSTEM_PROMPT_FUE,
             user_prompt=context,
             schema=FollowUpEndExtraction,
             use_adjudicator=True,
         )
+        extraction, model_used = result.parsed, result.model_used
         used_adjudicator = True
 
     # Build pack first to get stable candidate_ids, then attach metadata
@@ -203,21 +205,23 @@ def find_primary_endpoint(
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_PE)
     context = _build_context(chunks, ta_warning, protocol_id)
 
-    extraction, model_used = client.extract(
+    result = client.extract(
         system_prompt=SYSTEM_PROMPT_PE,
         user_prompt=context,
         schema=PrimaryEndpointExtraction,
         use_adjudicator=False,
     )
+    extraction, model_used = result.parsed, result.model_used
 
     used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        extraction, model_used = client.extract(
+        result = client.extract(
             system_prompt=SYSTEM_PROMPT_PE,
             user_prompt=context,
             schema=PrimaryEndpointExtraction,
             use_adjudicator=True,
         )
+        extraction, model_used = result.parsed, result.model_used
         used_adjudicator = True
 
     # Build pack first to get stable candidate_ids, then attach metadata
@@ -276,11 +280,11 @@ def _build_pack(
             chunk_id=c.chunk_id,
             snippet=c.quoted_text,
             page=matching.page if matching else None,
-            section_title=c.section_title or (matching.heading if matching else None),
+            section_title=matching.heading if matching else c.section_title,
             source_type=matching.source_type if matching else "narrative",
             sponsor_term=c.sponsor_term,
             canonical_term=concept,
-            retrieval_score=matching.dense_score if matching else None,
+            retrieval_score=matching.retrieval_score if matching else None,
             rerank_score=matching.rerank_score if matching else None,
             llm_confidence=c.confidence,
             explicit=c.explicit,

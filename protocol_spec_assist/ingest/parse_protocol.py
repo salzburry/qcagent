@@ -17,8 +17,8 @@ class ParsedSection:
     heading: str
     heading_level: int
     text: str
-    page_start: int
-    page_end: int
+    page_start: Optional[int]
+    page_end: Optional[int]
     source_type: str = "narrative"      # narrative | table | appendix | footnote
     table_data: Optional[list[dict]] = None   # parsed table rows if source_type == table
     raw_json: Optional[dict] = None
@@ -38,6 +38,10 @@ class ParsedProtocol:
         """Flatten to chunk dicts for indexing."""
         chunks = []
         for sec in self.sections:
+            # Skip empty sections (e.g. failed table extraction)
+            if not sec.text.strip() and not sec.table_data:
+                continue
+
             base = {
                 "protocol_id": self.protocol_id,
                 "heading": sec.heading,
@@ -48,12 +52,13 @@ class ParsedProtocol:
             }
             if sec.source_type == "table" and sec.table_data:
                 # Each table row becomes its own chunk for precise retrieval
-                for row in sec.table_data:
+                for row_idx, row in enumerate(sec.table_data):
                     chunk_text = json.dumps(row)
                     chunk_id = _deterministic_chunk_id(
                         self.protocol_id, chunk_text,
                         heading=sec.heading, page=sec.page_start,
                         source_type=sec.source_type,
+                        position=row_idx,
                     )
                     chunks.append({
                         **base,
@@ -62,12 +67,16 @@ class ParsedProtocol:
                         "chunk_id": chunk_id,
                     })
             else:
+                # Skip if text is blank (empty table with no table_data)
+                if not sec.text.strip():
+                    continue
                 # Split long narrative sections into overlapping chunks
-                for chunk_text in _sliding_window(sec.text):
+                for chunk_idx, chunk_text in enumerate(_sliding_window(sec.text)):
                     chunk_id = _deterministic_chunk_id(
                         self.protocol_id, chunk_text,
                         heading=sec.heading, page=sec.page_start,
                         source_type=sec.source_type,
+                        position=chunk_idx,
                     )
                     chunks.append({
                         **base,
@@ -80,12 +89,13 @@ class ParsedProtocol:
 
 def _deterministic_chunk_id(
     protocol_id: str, text: str,
-    heading: str = "", page: int = 0, source_type: str = "",
+    heading: str = "", page: Optional[int] = None,
+    source_type: str = "", position: int = 0,
 ) -> str:
-    """Deterministic ID from protocol_id + heading + page + source_type + content hash.
-    Includes structural context so identical text on different pages/sections
-    gets different IDs."""
-    content = f"{protocol_id}:{heading}:{page}:{source_type}:{text}"
+    """Deterministic ID from protocol_id + heading + page + source_type + position + content hash.
+    Includes structural context and position so identical text in the same
+    section/page (e.g. duplicate table rows) gets different IDs."""
+    content = f"{protocol_id}:{heading}:{page}:{source_type}:{position}:{text}"
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
@@ -135,7 +145,6 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
     options.do_ocr = False              # set True for scanned PDFs
     options.do_table_structure = True   # critical — preserves table structure
 
-    # FIX: Actually pass options to DocumentConverter
     converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=options)
@@ -148,8 +157,8 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
     current_heading = "Preamble"
     current_level = 0
     current_text = ""
-    current_page_start = 0
-    current_page_end = 0
+    current_page_start: Optional[int] = None
+    current_page_end: Optional[int] = None
     current_source_type = "narrative"
 
     for item, level in doc.iterate_items():
@@ -177,8 +186,13 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
         elif item_type == "TextItem":
             # Append to current section instead of creating standalone
             text = getattr(item, "text", "")
+            page = _get_page(item)
+            # Initialize page_start on first text in a section
+            if current_page_start is None and page is not None:
+                current_page_start = page
+            if page is not None:
+                current_page_end = page
             current_text += " " + text
-            current_page_end = _get_page(item)
 
         elif item_type == "TableItem":
             # Flush accumulated text before table
@@ -195,16 +209,30 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
 
             table_data = _extract_table_data(item)
             page = _get_page(item)
-            heading = f"Table (p.{page})"
+            table_text = _table_to_text(table_data)
+
+            # Skip empty tables entirely
+            if not table_data and not table_text:
+                # Reset section start tracking for post-table narrative
+                current_page_start = page
+                current_page_end = page
+                continue
+
+            # Preserve parent section context in table heading
+            heading = f"{current_heading} | Table (p.{page})" if page else f"{current_heading} | Table"
             sections.append(ParsedSection(
                 heading=heading,
                 heading_level=level,
-                text=_table_to_text(table_data),
+                text=table_text,
                 page_start=page,
                 page_end=page,
                 source_type="table",
                 table_data=table_data,
             ))
+
+            # Reset section start tracking for post-table narrative
+            current_page_start = page
+            current_page_end = page
 
     # Flush final section
     if current_text.strip():
@@ -298,11 +326,14 @@ def _classify_section(heading: str, text: str) -> str:
         return "table"
     return "narrative"
 
-def _get_page(item) -> int:
+def _get_page(item) -> Optional[int]:
+    """Return page number or None if unavailable."""
     try:
-        return item.prov[0].page_no if item.prov else 0
+        if item.prov:
+            return item.prov[0].page_no
     except Exception:
-        return 0
+        pass
+    return None
 
 def _extract_table_data(item) -> list[dict]:
     try:
@@ -315,7 +346,6 @@ def _table_to_text(rows: list[dict]) -> str:
     """Convert table rows to pipe-delimited text for indexing."""
     if not rows:
         return ""
-    # FIX: join actual column names, not characters of str(dict_keys(...))
     header = " | ".join(str(k) for k in rows[0].keys())
     body = "\n".join(" | ".join(str(v) for v in row.values()) for row in rows)
     return header + "\n" + body
