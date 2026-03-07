@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
-from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning
+from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
 
 FINDER_VERSION = "0.1.0"
 PROMPT_VERSION = "0.1.0"
@@ -72,6 +72,7 @@ def find_follow_up_end(
         ta_pack, CONCEPT_FUE,
     )
 
+    priority_sections = get_section_priority(ta_pack, CONCEPT_FUE)
     chunks = index.search(
         query=queries[0],
         protocol_id=protocol_id,
@@ -79,6 +80,7 @@ def find_follow_up_end(
         top_k_retrieve=25,
         top_k_rerank=10,
         include_tables=True,
+        priority_sections=priority_sections,
     )
 
     if not chunks:
@@ -98,6 +100,7 @@ def find_follow_up_end(
         use_adjudicator=False,
     )
 
+    used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
         extraction, model_used = client.extract(
             system_prompt=SYSTEM_PROMPT_FUE,
@@ -105,13 +108,20 @@ def find_follow_up_end(
             schema=FollowUpEndExtraction,
             use_adjudicator=True,
         )
+        used_adjudicator = True
 
-    # Preserve concept-specific metadata (rule_type per candidate)
-    concept_metadata = {
-        "rule_types": [c.rule_type for c in extraction.candidates],
-    }
+    # Build pack first to get stable candidate_ids, then attach metadata
+    pack = _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used, used_adjudicator)
 
-    return _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used, concept_metadata)
+    # Attach concept-specific metadata keyed by candidate_id (not order-dependent)
+    candidate_metadata = {}
+    for ec, candidate in zip(extraction.candidates, pack.candidates):
+        candidate_metadata[candidate.candidate_id] = {
+            "rule_type": ec.rule_type,
+        }
+    pack.concept_metadata = {"per_candidate": candidate_metadata}
+
+    return pack
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -172,6 +182,7 @@ def find_primary_endpoint(
         ta_pack, CONCEPT_PE,
     )
 
+    priority_sections = get_section_priority(ta_pack, CONCEPT_PE)
     chunks = index.search(
         query=queries[0],
         protocol_id=protocol_id,
@@ -179,6 +190,7 @@ def find_primary_endpoint(
         top_k_retrieve=20,
         top_k_rerank=8,
         include_tables=True,
+        priority_sections=priority_sections,
     )
 
     if not chunks:
@@ -198,6 +210,7 @@ def find_primary_endpoint(
         use_adjudicator=False,
     )
 
+    used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
         extraction, model_used = client.extract(
             system_prompt=SYSTEM_PROMPT_PE,
@@ -205,20 +218,22 @@ def find_primary_endpoint(
             schema=PrimaryEndpointExtraction,
             use_adjudicator=True,
         )
+        used_adjudicator = True
 
-    # Preserve concept-specific metadata
-    concept_metadata = {
-        "endpoint_details": [
-            {
-                "is_composite": c.is_composite,
-                "components": c.components,
-                "time_to_event": c.time_to_event,
-            }
-            for c in extraction.candidates
-        ],
-    }
+    # Build pack first to get stable candidate_ids, then attach metadata
+    pack = _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used, used_adjudicator)
 
-    return _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used, concept_metadata)
+    # Attach concept-specific metadata keyed by candidate_id (not order-dependent)
+    candidate_metadata = {}
+    for ec, candidate in zip(extraction.candidates, pack.candidates):
+        candidate_metadata[candidate.candidate_id] = {
+            "is_composite": ec.is_composite,
+            "components": ec.components,
+            "time_to_event": ec.time_to_event,
+        }
+    pack.concept_metadata = {"per_candidate": candidate_metadata}
+
+    return pack
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -235,9 +250,13 @@ def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], prot
     return "\n\n---\n\n".join(parts)
 
 
+LOW_RETRIEVAL_THRESHOLD = 3     # fewer chunks than this → low signal
+RERANK_SCORE_FLOOR = 0.2       # top rerank score below this → low signal
+
+
 def _build_pack(
     concept, protocol_id, extraction, chunks, model_used,
-    concept_metadata: Optional[dict] = None,
+    adjudicator_used: bool = False,
 ) -> EvidencePack:
     # Build chunk lookup by chunk_id for deterministic provenance
     chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
@@ -247,8 +266,9 @@ def _build_pack(
         # Deterministic provenance via chunk_id
         matching = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
 
+        # Deterministic from content, not from position in list
         candidate_id = hashlib.sha256(
-            f"{protocol_id}:{concept}:{i}:{c.quoted_text[:50]}".encode()
+            f"{protocol_id}:{concept}:{c.chunk_id or ''}:{c.quoted_text}".encode()
         ).hexdigest()[:12]
 
         candidates.append(EvidenceCandidate(
@@ -266,6 +286,11 @@ def _build_pack(
             explicit=c.explicit,
         ))
 
+    # low_retrieval_signal: few chunks OR top rerank score too low
+    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
+    if chunks and chunks[0].rerank_score is not None:
+        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
+
     return EvidencePack(
         protocol_id=protocol_id,
         concept=concept,
@@ -273,9 +298,8 @@ def _build_pack(
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
-        concept_metadata=concept_metadata,
-        low_retrieval_signal=len(chunks) < 3,
-        adjudicator_used=extraction.overall_confidence < CONFIDENCE_THRESHOLD,
+        low_retrieval_signal=low_signal,
+        adjudicator_used=adjudicator_used,
         requires_human_selection=True,
         finder_version=FINDER_VERSION,
         model_used=model_used,

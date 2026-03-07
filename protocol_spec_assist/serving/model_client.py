@@ -7,10 +7,14 @@ Designed so swapping to OpenAI later = change config, not code.
 from __future__ import annotations
 import os
 import json
+import time
+import logging
 from typing import Optional, Type, TypeVar
+from dataclasses import dataclass, field
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -24,6 +28,8 @@ class ModelConfig(BaseModel):
     vision_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"    # scanned pages
     temperature: float = 0.0                              # deterministic extraction
     max_tokens: int = 2048
+    max_retries: int = 2                                  # retry on transient failures
+    timeout: float = 120.0                                # seconds
 
 
 _config: Optional[ModelConfig] = None
@@ -42,6 +48,17 @@ def get_config() -> ModelConfig:
             adjudicator_model=os.environ.get("ADJUDICATOR_MODEL", "Qwen/Qwen3-30B-A3B-Instruct"),
         )
     return _config
+
+
+# ── Extraction result with raw response ──────────────────────────────────────
+
+@dataclass
+class ExtractionResult:
+    """Carries both parsed output and raw response for debugging."""
+    parsed: object
+    model_used: str
+    raw_response: str
+    prompt_version: str = ""
 
 
 # ── Client ────────────────────────────────────────────────────────────────────
@@ -69,6 +86,7 @@ class LocalModelClient:
                 self._adjudicator_client = OpenAI(
                     base_url=self.config.adjudicator_base_url,
                     api_key=self.config.api_key,
+                    timeout=self.config.timeout,
                 )
             return self._adjudicator_client
         else:
@@ -76,8 +94,26 @@ class LocalModelClient:
                 self._default_client = OpenAI(
                     base_url=self.config.default_base_url,
                     api_key=self.config.api_key,
+                    timeout=self.config.timeout,
                 )
             return self._default_client
+
+    def check_model_available(self, use_adjudicator: bool = False) -> bool:
+        """Verify the configured model is served before starting a run."""
+        client = self._get_client(use_adjudicator=use_adjudicator)
+        model = self.config.adjudicator_model if use_adjudicator else self.config.default_model
+        try:
+            models = client.models.list()
+            available = [m.id for m in models.data]
+            if model in available:
+                return True
+            logger.warning(
+                f"Model '{model}' not found. Available: {available}"
+            )
+            return False
+        except Exception as e:
+            logger.error(f"Cannot reach model server: {e}")
+            return False
 
     def extract(
         self,
@@ -90,32 +126,63 @@ class LocalModelClient:
         """
         Extract structured output from LLM, schema-constrained.
         Returns (parsed_object, model_used).
+        Retries on transient failures. Raises on persistent failure.
         """
         client = self._get_client(use_adjudicator=use_adjudicator)
         model = self.config.adjudicator_model if use_adjudicator else self.config.default_model
 
-        # vLLM structured outputs: pass JSON schema as response_format
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema.__name__,
-                    "schema": schema.model_json_schema(),
-                    "strict": True,
-                },
-            },
-        )
+        last_error = None
+        for attempt in range(1 + self.config.max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": schema.__name__,
+                            "schema": schema.model_json_schema(),
+                            "strict": True,
+                        },
+                    },
+                )
 
-        raw = response.choices[0].message.content
-        parsed = schema.model_validate_json(raw)
-        return parsed, model
+                raw = response.choices[0].message.content
+                if not raw or not raw.strip():
+                    raise ValueError("Empty response content from model")
+
+                parsed = schema.model_validate_json(raw)
+                return parsed, model
+
+            except (ValueError, json.JSONDecodeError) as e:
+                # Malformed JSON or empty content — retry
+                last_error = e
+                logger.warning(
+                    f"[extract] Attempt {attempt + 1}: parse error: {e}"
+                )
+                if attempt < self.config.max_retries:
+                    time.sleep(1 * (attempt + 1))
+                continue
+
+            except Exception as e:
+                # Connection/timeout errors — retry
+                last_error = e
+                logger.warning(
+                    f"[extract] Attempt {attempt + 1}: {type(e).__name__}: {e}"
+                )
+                if attempt < self.config.max_retries:
+                    time.sleep(2 * (attempt + 1))
+                continue
+
+        raise RuntimeError(
+            f"Extraction failed after {1 + self.config.max_retries} attempts. "
+            f"Last error: {last_error}"
+        )
 
     def chat(
         self,

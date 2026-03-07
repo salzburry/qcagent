@@ -215,6 +215,8 @@ class ProtocolIndex:
         top_k_rerank: int = 8,
         include_tables: bool = True,
         source_type_filter: Optional[str] = None,
+        priority_sections: Optional[list[str]] = None,
+        priority_boost: float = 0.1,
     ) -> list[RetrievedChunk]:
         """
         Hybrid dense+sparse search with RRF fusion and reranking.
@@ -290,4 +292,17 @@ class ProtocolIndex:
             return []
 
         # Rerank
-        return self._reranker.rerank(query, chunks, top_k=top_k_rerank)
+        reranked = self._reranker.rerank(query, chunks, top_k=top_k_rerank)
+
+        # Apply section-priority boost from TA packs
+        if priority_sections:
+            priority_lower = [s.lower() for s in priority_sections]
+            for chunk in reranked:
+                heading_lower = chunk.heading.lower()
+                if any(ps in heading_lower for ps in priority_lower):
+                    if chunk.rerank_score is not None:
+                        chunk.rerank_score += priority_boost
+            # Re-sort after boosting
+            reranked.sort(key=lambda c: c.score, reverse=True)
+
+        return reranked

@@ -78,7 +78,7 @@ class EvidencePack(BaseModel):
 
     # Human review state
     requires_human_selection: bool = True
-    selected_candidate_idx: Optional[int] = None
+    selected_candidate_id: Optional[str] = None  # stable candidate_id, not index
     reviewer_notes: Optional[str] = None
     reviewer_override: Optional[str] = None  # free-text if no candidate is right
 
@@ -90,15 +90,25 @@ class EvidencePack(BaseModel):
     @property
     def is_resolved(self) -> bool:
         return (
-            self.selected_candidate_idx is not None
+            self.selected_candidate_id is not None
             or self.reviewer_override is not None
         )
 
     @property
     def selected_candidate(self) -> Optional[EvidenceCandidate]:
-        if self.selected_candidate_idx is not None:
-            return self.candidates[self.selected_candidate_idx]
+        if self.selected_candidate_id is not None:
+            for c in self.candidates:
+                if c.candidate_id == self.selected_candidate_id:
+                    return c
         return None
+
+    def select_candidate(self, candidate_id: str) -> bool:
+        """Select a candidate by its stable ID. Returns False if not found."""
+        for c in self.candidates:
+            if c.candidate_id == candidate_id:
+                self.selected_candidate_id = candidate_id
+                return True
+        return False
 
     @property
     def governing_text(self) -> Optional[str]:
