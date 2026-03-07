@@ -16,7 +16,8 @@ T = TypeVar("T", bound=BaseModel)
 # ── Config ────────────────────────────────────────────────────────────────────
 
 class ModelConfig(BaseModel):
-    base_url: str = "http://localhost:8000/v1"
+    default_base_url: str = "http://localhost:8000/v1"
+    adjudicator_base_url: str = "http://localhost:8001/v1"
     api_key: str = "local"
     default_model: str = "Qwen/Qwen3-8B-Instruct"        # laptop default
     adjudicator_model: str = "Qwen/Qwen3-30B-A3B-Instruct"  # harder cases
@@ -31,7 +32,12 @@ def get_config() -> ModelConfig:
     global _config
     if _config is None:
         _config = ModelConfig(
-            base_url=os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1"),
+            default_base_url=os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1"),
+            adjudicator_base_url=os.environ.get(
+                "ADJUDICATOR_BASE_URL",
+                os.environ.get("VLLM_BASE_URL", "http://localhost:8001/v1"),
+            ),
+            api_key=os.environ.get("VLLM_API_KEY", "local"),
             default_model=os.environ.get("DEFAULT_MODEL", "Qwen/Qwen3-8B-Instruct"),
             adjudicator_model=os.environ.get("ADJUDICATOR_MODEL", "Qwen/Qwen3-30B-A3B-Instruct"),
         )
@@ -44,23 +50,34 @@ class LocalModelClient:
     """
     OpenAI-compatible client pointed at local vLLM server.
     Supports structured outputs via JSON schema.
+    Maintains separate clients for default and adjudicator endpoints.
     """
 
     def __init__(self, config: Optional[ModelConfig] = None):
         self.config = config or get_config()
-        self._client = None
+        self._default_client = None
+        self._adjudicator_client = None
 
-    def _get_client(self):
-        if self._client is None:
-            try:
-                from openai import OpenAI
-                self._client = OpenAI(
-                    base_url=self.config.base_url,
+    def _get_client(self, use_adjudicator: bool = False):
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("pip install openai")
+
+        if use_adjudicator:
+            if self._adjudicator_client is None:
+                self._adjudicator_client = OpenAI(
+                    base_url=self.config.adjudicator_base_url,
                     api_key=self.config.api_key,
                 )
-            except ImportError:
-                raise ImportError("pip install openai")
-        return self._client
+            return self._adjudicator_client
+        else:
+            if self._default_client is None:
+                self._default_client = OpenAI(
+                    base_url=self.config.default_base_url,
+                    api_key=self.config.api_key,
+                )
+            return self._default_client
 
     def extract(
         self,
@@ -74,7 +91,7 @@ class LocalModelClient:
         Extract structured output from LLM, schema-constrained.
         Returns (parsed_object, model_used).
         """
-        client = self._get_client()
+        client = self._get_client(use_adjudicator=use_adjudicator)
         model = self.config.adjudicator_model if use_adjudicator else self.config.default_model
 
         # vLLM structured outputs: pass JSON schema as response_format
@@ -107,7 +124,7 @@ class LocalModelClient:
         use_adjudicator: bool = False,
     ) -> str:
         """Freeform chat — used only for protocol Q&A UI, not extraction."""
-        client = self._get_client()
+        client = self._get_client(use_adjudicator=use_adjudicator)
         model = self.config.adjudicator_model if use_adjudicator else self.config.default_model
 
         response = client.chat.completions.create(
@@ -134,7 +151,7 @@ vllm serve Qwen/Qwen3-8B-Instruct \\
     --enable-prefix-caching \\
     --dtype auto
 
-# For MoE 30B model (needs more VRAM):
+# For MoE 30B model (needs more VRAM — separate port):
 vllm serve Qwen/Qwen3-30B-A3B-Instruct \\
     --host 0.0.0.0 \\
     --port 8001 \\

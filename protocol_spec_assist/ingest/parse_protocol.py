@@ -5,6 +5,7 @@ Output: structured dict ready for chunking and indexing.
 """
 
 from __future__ import annotations
+import hashlib
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -48,25 +49,46 @@ class ParsedProtocol:
             if sec.source_type == "table" and sec.table_data:
                 # Each table row becomes its own chunk for precise retrieval
                 for row in sec.table_data:
-                    chunks.append({**base, "text": json.dumps(row), "is_table_row": True})
+                    chunk_text = json.dumps(row)
+                    chunk_id = _deterministic_chunk_id(self.protocol_id, chunk_text)
+                    chunks.append({
+                        **base,
+                        "text": chunk_text,
+                        "is_table_row": True,
+                        "chunk_id": chunk_id,
+                    })
             else:
                 # Split long narrative sections into overlapping chunks
                 for chunk_text in _sliding_window(sec.text):
-                    chunks.append({**base, "text": chunk_text, "is_table_row": False})
+                    chunk_id = _deterministic_chunk_id(self.protocol_id, chunk_text)
+                    chunks.append({
+                        **base,
+                        "text": chunk_text,
+                        "is_table_row": False,
+                        "chunk_id": chunk_id,
+                    })
         return chunks
+
+
+def _deterministic_chunk_id(protocol_id: str, text: str) -> str:
+    """Deterministic ID from protocol_id + chunk content hash.
+    Prevents duplicates on re-index."""
+    content = f"{protocol_id}:{text}"
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
 def _sliding_window(text: str, max_chars: int = 1000, overlap: int = 150) -> list[str]:
     """Split text into overlapping chunks on sentence boundaries."""
     import re
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    # Split on sentence-ending punctuation, bullet points, and blank lines
+    parts = re.split(r'(?<=[.!?])\s+|(?:\n\s*\n)|(?:\n\s*[-•●]\s)', text.strip())
     chunks, current = [], ""
-    for sent in sentences:
-        if len(current) + len(sent) > max_chars and current:
+    for part in parts:
+        if len(current) + len(part) > max_chars and current:
             chunks.append(current.strip())
-            current = current[-overlap:] + " " + sent
+            current = current[-overlap:] + " " + part
         else:
-            current += " " + sent
+            current += " " + part
     if current.strip():
         chunks.append(current.strip())
     return chunks or [text]
@@ -93,7 +115,7 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
     Docling parse — preserves tables, reading order, layout.
     pip install docling
     """
-    from docling.document_converter import DocumentConverter
+    from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
 
@@ -101,33 +123,67 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
     options.do_ocr = False              # set True for scanned PDFs
     options.do_table_structure = True   # critical — preserves table structure
 
-    converter = DocumentConverter()
+    # FIX: Actually pass options to DocumentConverter
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=options)
+        }
+    )
     result = converter.convert(str(path))
     doc = result.document
 
     sections = []
+    current_heading = "Preamble"
+    current_level = 0
+    current_text = ""
+    current_page_start = 0
+    current_page_end = 0
+    current_source_type = "narrative"
 
     for item, level in doc.iterate_items():
         item_type = type(item).__name__
 
-        if item_type in ("SectionHeaderItem", "TextItem"):
-            heading = getattr(item, "text", "")[:120]
+        if item_type == "SectionHeaderItem":
+            # Flush accumulated text as a section
+            if current_text.strip():
+                sections.append(ParsedSection(
+                    heading=current_heading,
+                    heading_level=current_level,
+                    text=current_text.strip(),
+                    page_start=current_page_start,
+                    page_end=current_page_end,
+                    source_type=current_source_type,
+                ))
+            # Start new section
+            current_heading = getattr(item, "text", "")[:120]
+            current_level = level
+            current_text = ""
+            current_page_start = _get_page(item)
+            current_page_end = current_page_start
+            current_source_type = _classify_section(current_heading, "")
+
+        elif item_type == "TextItem":
+            # Append to current section instead of creating standalone
             text = getattr(item, "text", "")
-            page = _get_page(item)
-            source_type = _classify_section(heading, text)
-            sections.append(ParsedSection(
-                heading=heading,
-                heading_level=level,
-                text=text,
-                page_start=page,
-                page_end=page,
-                source_type=source_type,
-            ))
+            current_text += " " + text
+            current_page_end = _get_page(item)
 
         elif item_type == "TableItem":
+            # Flush accumulated text before table
+            if current_text.strip():
+                sections.append(ParsedSection(
+                    heading=current_heading,
+                    heading_level=current_level,
+                    text=current_text.strip(),
+                    page_start=current_page_start,
+                    page_end=current_page_end,
+                    source_type=current_source_type,
+                ))
+                current_text = ""
+
             table_data = _extract_table_data(item)
-            heading = f"Table (p.{_get_page(item)})"
             page = _get_page(item)
+            heading = f"Table (p.{page})"
             sections.append(ParsedSection(
                 heading=heading,
                 heading_level=level,
@@ -137,6 +193,17 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
                 source_type="table",
                 table_data=table_data,
             ))
+
+    # Flush final section
+    if current_text.strip():
+        sections.append(ParsedSection(
+            heading=current_heading,
+            heading_level=current_level,
+            text=current_text.strip(),
+            page_start=current_page_start,
+            page_end=current_page_end,
+            source_type=current_source_type,
+        ))
 
     return ParsedProtocol(
         protocol_id=protocol_id,
@@ -205,7 +272,7 @@ def _parse_with_pymupdf(path: Path, protocol_id: str) -> ParsedProtocol:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 APPENDIX_SIGNALS = ["appendix", "supplement", "annex", "schedule of assessments"]
-FOOTNOTE_SIGNALS = ["footnote", "note:", "†", "‡", "§", "*"]
+FOOTNOTE_SIGNALS = ["footnote", "note:", "\u2020", "\u2021", "\u00a7", "*"]
 TABLE_SIGNALS = ["table", "exhibit", "figure"]
 
 def _classify_section(heading: str, text: str) -> str:
@@ -233,10 +300,13 @@ def _extract_table_data(item) -> list[dict]:
         return []
 
 def _table_to_text(rows: list[dict]) -> str:
+    """Convert table rows to pipe-delimited text for indexing."""
     if not rows:
         return ""
-    return " | ".join(str(rows[0].keys())) + "\n" + \
-           "\n".join(" | ".join(str(v) for v in row.values()) for row in rows)
+    # FIX: join actual column names, not characters of str(dict_keys(...))
+    header = " | ".join(str(k) for k in rows[0].keys())
+    body = "\n".join(" | ".join(str(v) for v in row.values()) for row in rows)
+    return header + "\n" + body
 
 def _extract_title(doc) -> Optional[str]:
     try:

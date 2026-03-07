@@ -4,6 +4,7 @@ Same fixed workflow pattern as index_date.py.
 """
 
 from __future__ import annotations
+import hashlib
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -25,7 +26,9 @@ CONCEPT_FUE = "follow_up_end"
 
 class FollowUpEndExtraction(BaseModel):
     class CandidateExtraction(BaseModel):
-        snippet: str
+        chunk_id: Optional[str] = None
+        quoted_text: str
+        summary: Optional[str] = None
         section_title: str
         sponsor_term: str
         explicit: ExplicitType
@@ -52,6 +55,8 @@ Rules:
 - Distinguish date-based vs event-based vs data cutoff rules.
 - If different sections give different rules, flag as contradiction.
 - Mark inferred definitions clearly.
+- IMPORTANT: Return the chunk_id from each chunk header for provenance.
+- Return the exact quoted_text from the protocol, not a paraphrase.
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
@@ -101,7 +106,12 @@ def find_follow_up_end(
             use_adjudicator=True,
         )
 
-    return _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used)
+    # Preserve concept-specific metadata (rule_type per candidate)
+    concept_metadata = {
+        "rule_types": [c.rule_type for c in extraction.candidates],
+    }
+
+    return _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used, concept_metadata)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -112,7 +122,9 @@ CONCEPT_PE = "primary_endpoint"
 
 class PrimaryEndpointExtraction(BaseModel):
     class CandidateExtraction(BaseModel):
-        snippet: str
+        chunk_id: Optional[str] = None
+        quoted_text: str
+        summary: Optional[str] = None
         section_title: str
         sponsor_term: str
         explicit: ExplicitType
@@ -143,6 +155,8 @@ Rules:
 - For MACE or composite endpoints, capture all components.
 - Note whether time-to-event or binary/rate outcome.
 - If endpoint definition appears in multiple sections with differences, flag contradiction.
+- IMPORTANT: Return the chunk_id from each chunk header for provenance.
+- Return the exact quoted_text from the protocol, not a paraphrase.
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
@@ -153,7 +167,7 @@ def find_primary_endpoint(
     ta_pack: Optional[TAPack] = None,
 ) -> EvidencePack:
 
-    queries = build_query_pack(
+    queries = build_query_bank(
         "primary endpoint primary outcome primary objective key endpoint",
         ta_pack, CONCEPT_PE,
     )
@@ -192,44 +206,63 @@ def find_primary_endpoint(
             use_adjudicator=True,
         )
 
-    return _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used)
+    # Preserve concept-specific metadata
+    concept_metadata = {
+        "endpoint_details": [
+            {
+                "is_composite": c.is_composite,
+                "components": c.components,
+                "time_to_event": c.time_to_event,
+            }
+            for c in extraction.candidates
+        ],
+    }
+
+    return _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used, concept_metadata)
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
-def build_query_pack(base: str, pack, concept: str) -> list[str]:
-    from ..ta_packs.loader import build_query_bank
-    return build_query_bank(base, pack, concept)
-
-
 def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], protocol_id: str) -> str:
     parts = [f"Protocol ID: {protocol_id}"]
     if ta_warning:
-        parts.append(f"\n⚠ TA PACK WARNING: {ta_warning}\n")
+        parts.append(f"\nTA PACK WARNING: {ta_warning}\n")
     for i, c in enumerate(chunks, 1):
         parts.append(
-            f"[Chunk {i} | Section: {c.heading} | Type: {c.source_type} | "
+            f"[chunk_id={c.chunk_id} | Section: {c.heading} | Type: {c.source_type} | "
             f"Page: {c.page} | Score: {c.score:.2f}]\n{c.text}"
         )
     return "\n\n---\n\n".join(parts)
 
 
-def _build_pack(concept, protocol_id, extraction, chunks, model_used) -> EvidencePack:
+def _build_pack(
+    concept, protocol_id, extraction, chunks, model_used,
+    concept_metadata: Optional[dict] = None,
+) -> EvidencePack:
+    # Build chunk lookup by chunk_id for deterministic provenance
+    chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
+
     candidates = []
-    for c in extraction.candidates:
-        matching = next(
-            (ch for ch in chunks if c.snippet[:50] in ch.text or ch.text[:50] in c.snippet),
-            None
-        )
+    for i, c in enumerate(extraction.candidates):
+        # Deterministic provenance via chunk_id
+        matching = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
+
+        candidate_id = hashlib.sha256(
+            f"{protocol_id}:{concept}:{i}:{c.quoted_text[:50]}".encode()
+        ).hexdigest()[:12]
+
         candidates.append(EvidenceCandidate(
-            snippet=c.snippet,
+            candidate_id=candidate_id,
+            chunk_id=c.chunk_id,
+            snippet=c.quoted_text,
             page=matching.page if matching else None,
             section_title=c.section_title or (matching.heading if matching else None),
             source_type=matching.source_type if matching else "narrative",
             sponsor_term=c.sponsor_term,
             canonical_term=concept,
-            retrieval_score=matching.dense_score if matching else 0.0,
+            retrieval_score=matching.dense_score if matching else None,
             rerank_score=matching.rerank_score if matching else None,
+            llm_confidence=c.confidence,
             explicit=c.explicit,
         ))
 
@@ -239,6 +272,8 @@ def _build_pack(concept, protocol_id, extraction, chunks, model_used) -> Evidenc
         candidates=candidates,
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
+        overall_confidence=extraction.overall_confidence,
+        concept_metadata=concept_metadata,
         low_retrieval_signal=len(chunks) < 3,
         adjudicator_used=extraction.overall_confidence < CONFIDENCE_THRESHOLD,
         requires_human_selection=True,
