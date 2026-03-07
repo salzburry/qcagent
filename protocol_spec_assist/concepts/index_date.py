@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
-from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning
+from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
 
 CONCEPT = "index_date"
 FINDER_VERSION = "0.1.0"
@@ -127,6 +127,7 @@ def find_index_date(
     )
 
     # Step 2: Hybrid retrieval — include tables (index dates often in design diagrams)
+    priority_sections = get_section_priority(ta_pack, CONCEPT)
     chunks = index.search(
         query=queries[0],
         protocol_id=protocol_id,
@@ -134,6 +135,7 @@ def find_index_date(
         top_k_retrieve=25,
         top_k_rerank=10,
         include_tables=True,
+        priority_sections=priority_sections,
     )
 
     if not chunks:
@@ -162,6 +164,7 @@ def find_index_date(
     )
 
     # Step 5: Confidence router — adjudicator pass if needed
+    used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
         print(f"[IndexDateFinder] Low confidence ({extraction.overall_confidence:.2f}) "
               f"or contradictions — running adjudicator pass.")
@@ -172,6 +175,7 @@ def find_index_date(
             use_adjudicator=True,
             prompt_version=PROMPT_VERSION,
         )
+        used_adjudicator = True
 
     # Step 6: Build EvidencePack from extraction
     # Build chunk lookup by chunk_id for deterministic provenance
@@ -182,8 +186,9 @@ def find_index_date(
         # Deterministic provenance via chunk_id (not fuzzy snippet matching)
         matching_chunk = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
 
+        # Deterministic from content, not from position in list
         candidate_id = hashlib.sha256(
-            f"{protocol_id}:{CONCEPT}:{i}:{c.quoted_text[:50]}".encode()
+            f"{protocol_id}:{CONCEPT}:{c.chunk_id or ''}:{c.quoted_text}".encode()
         ).hexdigest()[:12]
 
         candidates.append(EvidenceCandidate(
@@ -208,8 +213,11 @@ def find_index_date(
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
-        low_retrieval_signal=len(chunks) < 3,
-        adjudicator_used=extraction.overall_confidence < CONFIDENCE_THRESHOLD,
+        low_retrieval_signal=(
+            len(chunks) < 3
+            or (chunks[0].rerank_score is not None and chunks[0].rerank_score < 0.2)
+        ),
+        adjudicator_used=used_adjudicator,
         requires_human_selection=True,
         finder_version=FINDER_VERSION,
         model_used=model_used,

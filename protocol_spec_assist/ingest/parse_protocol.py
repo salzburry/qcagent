@@ -50,7 +50,11 @@ class ParsedProtocol:
                 # Each table row becomes its own chunk for precise retrieval
                 for row in sec.table_data:
                     chunk_text = json.dumps(row)
-                    chunk_id = _deterministic_chunk_id(self.protocol_id, chunk_text)
+                    chunk_id = _deterministic_chunk_id(
+                        self.protocol_id, chunk_text,
+                        heading=sec.heading, page=sec.page_start,
+                        source_type=sec.source_type,
+                    )
                     chunks.append({
                         **base,
                         "text": chunk_text,
@@ -60,7 +64,11 @@ class ParsedProtocol:
             else:
                 # Split long narrative sections into overlapping chunks
                 for chunk_text in _sliding_window(sec.text):
-                    chunk_id = _deterministic_chunk_id(self.protocol_id, chunk_text)
+                    chunk_id = _deterministic_chunk_id(
+                        self.protocol_id, chunk_text,
+                        heading=sec.heading, page=sec.page_start,
+                        source_type=sec.source_type,
+                    )
                     chunks.append({
                         **base,
                         "text": chunk_text,
@@ -70,10 +78,14 @@ class ParsedProtocol:
         return chunks
 
 
-def _deterministic_chunk_id(protocol_id: str, text: str) -> str:
-    """Deterministic ID from protocol_id + chunk content hash.
-    Prevents duplicates on re-index."""
-    content = f"{protocol_id}:{text}"
+def _deterministic_chunk_id(
+    protocol_id: str, text: str,
+    heading: str = "", page: int = 0, source_type: str = "",
+) -> str:
+    """Deterministic ID from protocol_id + heading + page + source_type + content hash.
+    Includes structural context so identical text on different pages/sections
+    gets different IDs."""
+    content = f"{protocol_id}:{heading}:{page}:{source_type}:{text}"
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
