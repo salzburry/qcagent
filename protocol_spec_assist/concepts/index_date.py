@@ -168,16 +168,19 @@ def find_index_date(
     used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
         print(f"[IndexDateFinder] Low confidence ({extraction.overall_confidence:.2f}) "
-              f"or contradictions — running adjudicator pass.")
-        result = client.extract(
-            system_prompt=SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            schema=IndexDateExtraction,
-            use_adjudicator=True,
-            prompt_version=PROMPT_VERSION,
-        )
-        extraction, model_used = result.parsed, result.model_used
-        used_adjudicator = True
+              f"or contradictions — attempting adjudicator pass.")
+        try:
+            result = client.extract(
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                schema=IndexDateExtraction,
+                use_adjudicator=True,
+                prompt_version=PROMPT_VERSION,
+            )
+            extraction, model_used = result.parsed, result.model_used
+            used_adjudicator = True
+        except Exception as e:
+            print(f"[IndexDateFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
 
     # Step 6: Build EvidencePack from extraction
     # Build chunk lookup by chunk_id for deterministic provenance

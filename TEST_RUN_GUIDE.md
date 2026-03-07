@@ -9,7 +9,7 @@ Step-by-step instructions to run the full pipeline end-to-end.
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
 | **GPU (vLLM)** | 1x GPU with 18 GB VRAM (Qwen3-8B fp16) | 1x 24 GB GPU (e.g. RTX 3090/4090/A5000) |
-| **GPU (adjudicator)** | Optional — 18 GB VRAM on second GPU or same GPU | 1x 24 GB GPU on port 8001 |
+| **GPU (adjudicator)** | Not needed for first run — point both endpoints at the same model | 1x 80 GB GPU (A100/H100) for 30B MoE at fp16 |
 | **RAM** | 16 GB | 32 GB (BGE-M3 + reranker load into RAM before GPU transfer) |
 | **Disk** | 40 GB free | 80 GB free |
 | **CPU** | 4 cores | 8+ cores (Docling parsing is CPU-heavy) |
@@ -18,36 +18,34 @@ Step-by-step instructions to run the full pipeline end-to-end.
 
 | Model | Size | Purpose |
 |-------|------|---------|
-| `Qwen/Qwen3-8B-Instruct` | ~16 GB (fp16 weights) | Default LLM extractor |
-| `Qwen/Qwen3-30B-A3B-Instruct` | ~18 GB (Q4) / ~58 GB (fp16) | Adjudicator (optional for test) |
+| `Qwen/Qwen3-8B` | ~16 GB (bf16 weights) | Default LLM extractor |
+| `Qwen/Qwen3-30B-A3B-Instruct-2507` | ~61 GB (bf16) / ~18 GB (Q4_K_M) | Adjudicator (skip for first run) |
 | `BAAI/bge-m3` | ~2.3 GB | Embeddings (dense + sparse) |
-| `BAAI/bge-reranker-v2-m3` | ~1.1 GB (568M params) | Cross-encoder reranker |
-| Docling models | ~1 GB (auto-downloaded) | PDF table/layout parsing |
+| `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Cross-encoder reranker |
+| Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing |
 
-**Total first-time download: ~20 GB** (without adjudicator) or **~40 GB** (with adjudicator at fp16).
+**Total first-time download: ~21 GB** (without adjudicator).
 
 ### No GPU? Alternatives
 
 - **Ollama** can serve Qwen3-8B quantized on CPU (slow but works). See Step 3b below.
-- **vLLM CPU mode** exists but is experimental. See: https://docs.vllm.ai/en/latest/getting_started/installation/cpu/
-- BGE-M3 and the reranker both run on CPU (slower, but functional).
+- **vLLM CPU mode**: `pip install vllm-cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple` — functional but substantially slower than GPU.
+- BGE-M3 and the reranker both run on CPU (slower, but functional). Set `use_fp16=False` in code if no GPU.
 
 ---
 
 ## Step 0: Prerequisites
 
 ```bash
-# Python 3.10+ required
+# Python 3.10 or 3.11 recommended (best ML dependency compatibility)
 python --version   # must be >= 3.10
 
-# CUDA toolkit (for GPU)
-nvidia-smi         # verify GPU visible
-nvcc --version     # CUDA compiler
-
-# Git LFS (for HuggingFace model downloads)
-sudo apt install git-lfs   # Ubuntu/Debian
-git lfs install
+# GPU verification (if using GPU)
+nvidia-smi         # verify GPU visible and VRAM available
+# nvcc --version   # optional — only needed if building from source
 ```
+
+**Note:** `nvidia-smi` is the critical check. `nvcc` (CUDA compiler) is only needed if compiling custom CUDA extensions. Most users do not need it.
 
 ---
 
@@ -62,6 +60,9 @@ source .venv/bin/activate
 
 # Install protocol-spec-assist + all dependencies
 pip install -e ".[dev]"
+
+# Install vLLM + HuggingFace CLI
+pip install vllm huggingface-hub
 
 # Verify install
 python -c "from protocol_spec_assist.schemas.evidence import EvidencePack; print('OK')"
@@ -93,12 +94,10 @@ These download automatically from HuggingFace when first loaded by FlagEmbedding
 To pre-download for offline use:
 
 ```bash
-pip install huggingface-hub
-
 # BGE-M3 embeddings (~2.3 GB)
 huggingface-cli download BAAI/bge-m3
 
-# BGE reranker (~1.1 GB)
+# BGE reranker (~2.3 GB)
 huggingface-cli download BAAI/bge-reranker-v2-m3
 ```
 
@@ -106,18 +105,26 @@ huggingface-cli download BAAI/bge-reranker-v2-m3
 
 ```bash
 # Default extractor model (~16 GB)
-huggingface-cli download Qwen/Qwen3-8B-Instruct
-
-# (Optional) Adjudicator model — only needed if you want the confidence-router second pass
-# This is an MoE model: 30B total params, only 3.3B active per token
-# At fp16: ~58 GB on disk. At Q4: ~18 GB.
-huggingface-cli download Qwen/Qwen3-30B-A3B-Instruct
+huggingface-cli download Qwen/Qwen3-8B
 ```
 
-### 2c. Docling models (auto-downloaded on first use)
+**Note on adjudicator:** For a first test run, skip the 30B adjudicator model entirely. Point both `DEFAULT_MODEL` and `ADJUDICATOR_MODEL` at `Qwen/Qwen3-8B`. The code now gracefully falls back to the first-pass result if the adjudicator is unavailable.
 
-Docling downloads its layout/table models automatically on first PDF conversion.
-No manual step needed. First parse will be slower (~30s extra).
+### 2c. Docling models
+
+Pre-download Docling's layout/table models for offline use:
+
+```bash
+# Programmatic pre-download (~360 MB)
+python -c "from docling.utils.model_downloader import download_models; download_models()"
+```
+
+Or via CLI if available:
+```bash
+docling-tools models download
+```
+
+Without pre-download, Docling will auto-download on first PDF conversion (~30s extra).
 
 ---
 
@@ -126,10 +133,8 @@ No manual step needed. First parse will be slower (~30s extra).
 ### 3a. vLLM (recommended — requires CUDA GPU)
 
 ```bash
-pip install vllm
-
 # Start default model on port 8000
-vllm serve Qwen/Qwen3-8B-Instruct \
+vllm serve Qwen/Qwen3-8B \
     --host 0.0.0.0 \
     --port 8000 \
     --max-model-len 32768 \
@@ -140,19 +145,22 @@ vllm serve Qwen/Qwen3-8B-Instruct \
 curl http://localhost:8000/v1/models
 ```
 
-Expected output: JSON listing `Qwen/Qwen3-8B-Instruct` as available.
+Expected output: JSON listing `Qwen/Qwen3-8B` as available.
 
-**VRAM note:** Qwen3-8B at fp16 needs ~16 GB for weights + ~2-6 GB for KV cache depending on context length. A 24 GB GPU fits comfortably. A 16 GB GPU works with `--max-model-len 8192`.
+**VRAM note:** Qwen3-8B at bf16 needs ~16 GB for weights + ~2-6 GB for KV cache depending on context length. A 24 GB GPU fits comfortably. A 16 GB GPU works with `--max-model-len 8192`.
+
+**First-run recommendation: single model for both endpoints.**
 
 ```bash
-# (Optional) Start adjudicator on port 8001 — needs a second GPU or enough VRAM
-vllm serve Qwen/Qwen3-30B-A3B-Instruct \
-    --host 0.0.0.0 \
-    --port 8001 \
-    --max-model-len 32768 \
-    --enable-prefix-caching \
-    --dtype auto
+# Point both default and adjudicator at the same model
+export VLLM_BASE_URL=http://localhost:8000/v1
+export ADJUDICATOR_BASE_URL=http://localhost:8000/v1
+export VLLM_API_KEY=local
+export DEFAULT_MODEL=Qwen/Qwen3-8B
+export ADJUDICATOR_MODEL=Qwen/Qwen3-8B
 ```
+
+This avoids needing to serve the 30B MoE model separately. The adjudicator pass will use the same 8B model — less powerful but sufficient to validate the pipeline works end-to-end.
 
 ### 3b. Ollama alternative (no CUDA required, slower)
 
@@ -166,11 +174,12 @@ ollama pull qwen3:8b
 # Ollama serves on port 11434 by default
 # Set env to redirect the pipeline:
 export VLLM_BASE_URL=http://localhost:11434/v1
+export ADJUDICATOR_BASE_URL=http://localhost:11434/v1
 export DEFAULT_MODEL=qwen3:8b
+export ADJUDICATOR_MODEL=qwen3:8b
 ```
 
-**Warning:** Ollama does not support `response_format: json_schema` with `strict: true`.
-Structured outputs will be less reliable. Expect occasional parse failures that trigger retries.
+**Note:** Ollama now supports structured outputs via `response_format`, but this repo has not been validated against Ollama's behavior for strict schema-constrained extraction. vLLM remains the safer default for first-run testing.
 
 ---
 
@@ -233,6 +242,8 @@ Step 3: Find concepts         — 3 concept finders run sequentially:
         ├── index_date        — hybrid retrieval → rerank → LLM extract
         ├── follow_up_end     — same workflow, different queries/schema
         └── primary_endpoint  — same workflow, different queries/schema
+        Note: if confidence is low, each finder attempts an adjudicator pass.
+        If the adjudicator is unavailable, the first-pass result is kept.
 Step 4: Pre-review QC         — deterministic rule checks
 Step 5: Save evidence packs   — JSON output to data/outputs/
 ```
@@ -269,7 +280,7 @@ The output contains:
 
 Each candidate has:
 - `snippet`: exact quoted text from the protocol
-- `chunk_id`: link back to indexed chunk
+- `chunk_id`: link back to indexed chunk (valid UUID)
 - `page`: page number (or null)
 - `section_title`: section heading from the document
 - `retrieval_score` / `rerank_score`: retrieval pipeline scores
@@ -280,7 +291,7 @@ Each candidate has:
 ## Step 7: Run unit tests (no GPU needed)
 
 ```bash
-# All 56 tests — fast, no external dependencies
+# All tests — fast, no external dependencies
 pytest tests/ -v
 
 # Just the v0.2 fix tests
@@ -301,17 +312,24 @@ pytest tests/test_v02_fixes.py -v
 | `BackendUnavailable` on pip install | Wrong setuptools version | `pip install --upgrade setuptools wheel` then `pip install -e .` |
 | Slow first run | Downloading BGE-M3 + Docling models | One-time download. Subsequent runs are faster |
 | `No evidence candidates found` | Protocol doesn't discuss this concept | Expected for some protocols. Check QC output. |
+| Adjudicator unavailable warning | Adjudicator endpoint not running | Safe to ignore — first-pass result is kept. Set both endpoints to same model to suppress. |
 
 ---
 
 ## Environment Variables (optional overrides)
 
 ```bash
-export VLLM_BASE_URL=http://localhost:8000/v1         # Default model endpoint
-export ADJUDICATOR_BASE_URL=http://localhost:8001/v1   # Adjudicator endpoint
-export VLLM_API_KEY=local                              # API key (default: "local")
-export DEFAULT_MODEL=Qwen/Qwen3-8B-Instruct           # Model name on vLLM
-export ADJUDICATOR_MODEL=Qwen/Qwen3-30B-A3B-Instruct  # Adjudicator model name
+export VLLM_BASE_URL=http://localhost:8000/v1                    # Default model endpoint
+export ADJUDICATOR_BASE_URL=http://localhost:8000/v1             # Adjudicator endpoint (same as default for single-model setup)
+export VLLM_API_KEY=local                                        # API key (default: "local")
+export DEFAULT_MODEL=Qwen/Qwen3-8B                              # Model name on vLLM
+export ADJUDICATOR_MODEL=Qwen/Qwen3-8B                          # Adjudicator model (same for first run)
+```
+
+For a dual-model production setup:
+```bash
+export ADJUDICATOR_BASE_URL=http://localhost:8001/v1
+export ADJUDICATOR_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 ```
 
 ---

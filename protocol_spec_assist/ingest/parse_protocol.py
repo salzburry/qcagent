@@ -7,6 +7,7 @@ Output: structured dict ready for chunking and indexing.
 from __future__ import annotations
 import hashlib
 import json
+import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
@@ -92,11 +93,13 @@ def _deterministic_chunk_id(
     heading: str = "", page: Optional[int] = None,
     source_type: str = "", position: int = 0,
 ) -> str:
-    """Deterministic ID from protocol_id + heading + page + source_type + position + content hash.
+    """Deterministic UUID from protocol_id + heading + page + source_type + position + content hash.
+    Returns a valid UUID string — required by Qdrant for point IDs.
     Includes structural context and position so identical text in the same
     section/page (e.g. duplicate table rows) gets different IDs."""
     content = f"{protocol_id}:{heading}:{page}:{source_type}:{position}:{text}"
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
+    hex32 = hashlib.sha256(content.encode()).hexdigest()[:32]
+    return str(uuid.UUID(hex=hex32))
 
 
 def _sliding_window(text: str, max_chars: int = 1000, overlap: int = 150) -> list[str]:

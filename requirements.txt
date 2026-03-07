@@ -39,13 +39,13 @@ numpy>=1.24
 #    pip install vllm
 #
 # 2. Download models (HuggingFace — one-time):
-#    huggingface-cli download Qwen/Qwen3-8B-Instruct
-#    huggingface-cli download Qwen/Qwen3-30B-A3B-Instruct  # adjudicator
+#    huggingface-cli download Qwen/Qwen3-8B
+#    huggingface-cli download Qwen/Qwen3-30B-A3B-Instruct-2507  # adjudicator
 #    huggingface-cli download BAAI/bge-m3
 #    huggingface-cli download BAAI/bge-reranker-v2-m3
 #
 # 3. Start vLLM server (before running pipeline):
-#    vllm serve Qwen/Qwen3-8B-Instruct \
+#    vllm serve Qwen/Qwen3-8B \
 #        --host 0.0.0.0 --port 8000 \
 #        --max-model-len 32768 \
 #        --enable-prefix-caching \
