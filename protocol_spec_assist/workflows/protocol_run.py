@@ -153,6 +153,15 @@ def protocol_run(
 
     logger.info(f"Starting protocol run: {pid} | TA: {ta_name or 'none'}")
 
+    # Step 0: Preflight — verify model servers are reachable
+    client = LocalModelClient()
+    if not client.check_model_available(use_adjudicator=False):
+        raise RuntimeError(
+            f"Default model server not available at {client.config.default_base_url}. "
+            f"Start vLLM before running the pipeline."
+        )
+    logger.info("Model preflight passed — default model available.")
+
     # Step 1: Parse
     parse_result = task_parse_protocol(pdf_path, pid)
     logger.info(f"Parsed {parse_result['n_sections']} sections")

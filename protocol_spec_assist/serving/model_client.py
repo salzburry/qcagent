@@ -121,11 +121,11 @@ class LocalModelClient:
         user_prompt: str,
         schema: Type[T],
         use_adjudicator: bool = False,
-        prompt_version: str = "0.1.0",
-    ) -> tuple[T, str]:
+        prompt_version: str = "0.2.0",
+    ) -> ExtractionResult:
         """
         Extract structured output from LLM, schema-constrained.
-        Returns (parsed_object, model_used).
+        Returns ExtractionResult with parsed object, model_used, and raw response.
         Retries on transient failures. Raises on persistent failure.
         """
         client = self._get_client(use_adjudicator=use_adjudicator)
@@ -157,7 +157,12 @@ class LocalModelClient:
                     raise ValueError("Empty response content from model")
 
                 parsed = schema.model_validate_json(raw)
-                return parsed, model
+                return ExtractionResult(
+                    parsed=parsed,
+                    model_used=model,
+                    raw_response=raw,
+                    prompt_version=prompt_version,
+                )
 
             except (ValueError, json.JSONDecodeError) as e:
                 # Malformed JSON or empty content — retry

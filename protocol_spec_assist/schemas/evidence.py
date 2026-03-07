@@ -40,7 +40,7 @@ class EvidenceCandidate(BaseModel):
     A single protocol passage that may support a concept.
     Produced by retrieval + reranking.
     """
-    candidate_id: str = ""                  # deterministic ID for stable references
+    candidate_id: str                       # deterministic ID for stable references
     chunk_id: Optional[str] = None          # link back to indexed chunk for provenance
     snippet: str
     page: Optional[int] = None
@@ -62,7 +62,7 @@ class EvidencePack(BaseModel):
     """
     protocol_id: str
     concept: ConceptName
-    candidates: list[EvidenceCandidate] = []
+    candidates: list[EvidenceCandidate] = Field(default_factory=list)
 
     # Conflict/quality signals
     contradictions_found: bool = False
@@ -83,14 +83,14 @@ class EvidencePack(BaseModel):
     reviewer_override: Optional[str] = None  # free-text if no candidate is right
 
     # Run metadata
-    finder_version: str = "0.1.0"
+    finder_version: str = "0.2.0"
     model_used: str = ""
     prompt_version: str = ""
 
     @property
     def is_resolved(self) -> bool:
         return (
-            self.selected_candidate_id is not None
+            self.selected_candidate is not None
             or self.reviewer_override is not None
         )
 

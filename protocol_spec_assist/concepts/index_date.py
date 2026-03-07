@@ -22,8 +22,8 @@ from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
 
 CONCEPT = "index_date"
-FINDER_VERSION = "0.1.0"
-PROMPT_VERSION = "0.1.0"
+FINDER_VERSION = "0.2.0"
+PROMPT_VERSION = "0.2.0"
 CONFIDENCE_THRESHOLD = 0.65     # below this → adjudicator pass
 
 
@@ -155,26 +155,28 @@ def find_index_date(
     # Step 4: LLM extraction (schema-constrained)
     user_prompt = _build_user_prompt(chunks, ta_warning, protocol_id)
 
-    extraction, model_used = client.extract(
+    result = client.extract(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         schema=IndexDateExtraction,
         use_adjudicator=False,
         prompt_version=PROMPT_VERSION,
     )
+    extraction, model_used = result.parsed, result.model_used
 
     # Step 5: Confidence router — adjudicator pass if needed
     used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
         print(f"[IndexDateFinder] Low confidence ({extraction.overall_confidence:.2f}) "
               f"or contradictions — running adjudicator pass.")
-        extraction, model_used = client.extract(
+        result = client.extract(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
             schema=IndexDateExtraction,
             use_adjudicator=True,
             prompt_version=PROMPT_VERSION,
         )
+        extraction, model_used = result.parsed, result.model_used
         used_adjudicator = True
 
     # Step 6: Build EvidencePack from extraction
@@ -196,11 +198,11 @@ def find_index_date(
             chunk_id=c.chunk_id,
             snippet=c.quoted_text,
             page=matching_chunk.page if matching_chunk else None,
-            section_title=c.section_title or (matching_chunk.heading if matching_chunk else None),
+            section_title=matching_chunk.heading if matching_chunk else c.section_title,
             source_type=matching_chunk.source_type if matching_chunk else "narrative",
             sponsor_term=c.sponsor_term,
             canonical_term="index_date",
-            retrieval_score=matching_chunk.dense_score if matching_chunk else None,
+            retrieval_score=matching_chunk.retrieval_score if matching_chunk else None,
             rerank_score=matching_chunk.rerank_score if matching_chunk else None,
             llm_confidence=c.confidence,
             explicit=c.explicit,

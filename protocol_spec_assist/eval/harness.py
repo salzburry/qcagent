@@ -261,7 +261,7 @@ def run_evaluation(
         "mean_snippet_similarity": sum(r.snippet_similarity for r in results) / n,
         "section_match_rate": sum(r.section_match for r in results) / n,
         "explicit_type_accuracy": sum(r.explicit_type_correct for r in results) / n,
-        "contradiction_detection_rate": sum(r.contradictions_detected for r in results) / n,
+        "contradiction_flag_rate": sum(r.contradictions_detected for r in results) / n,
     }
 
     print("\n=== EVALUATION RESULTS ===")

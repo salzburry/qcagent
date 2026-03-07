@@ -19,15 +19,15 @@ class RetrievedChunk:
     text: str
     heading: str
     source_type: str
-    page: int
+    page: Optional[int]
     protocol_id: str
-    dense_score: float
+    retrieval_score: float          # fused hybrid score from Qdrant RRF
     rerank_score: Optional[float] = None
     chunk_id: Optional[str] = None
 
     @property
     def score(self) -> float:
-        return self.rerank_score if self.rerank_score is not None else self.dense_score
+        return self.rerank_score if self.rerank_score is not None else self.retrieval_score
 
 
 class EmbeddingModel:
@@ -156,6 +156,9 @@ class ProtocolIndex:
         # Delete existing chunks to prevent duplicates on re-index
         self.delete_protocol(protocol_id)
 
+        # Filter out empty chunks
+        chunks = [c for c in chunks if c.get("text", "").strip()]
+
         print(f"[Index] Indexing {len(chunks)} chunks for {protocol_id}...")
         texts = [c["text"] for c in chunks]
 
@@ -191,7 +194,7 @@ class ProtocolIndex:
                     "text": chunk["text"],
                     "heading": chunk.get("heading", ""),
                     "source_type": chunk.get("source_type", "narrative"),
-                    "page": chunk.get("page_start", 0),
+                    "page": chunk.get("page_start"),
                     "is_table_row": chunk.get("is_table_row", False),
                     "chunk_id": point_id,
                 }
@@ -253,7 +256,7 @@ class ProtocolIndex:
 
             search_filter = Filter(must=must_conditions)
 
-            # FIX: True hybrid retrieval using Qdrant's prefetch + RRF fusion
+            # True hybrid retrieval using Qdrant's prefetch + RRF fusion
             hybrid_results = self._client.query_points(
                 collection_name=COLLECTION_NAME,
                 prefetch=[
@@ -276,14 +279,19 @@ class ProtocolIndex:
 
             for hit in hybrid_results.points:
                 cid = hit.id
-                if cid not in all_hits:
+                new_score = hit.score
+                if cid in all_hits:
+                    # Keep the higher retrieval score across query variants
+                    if new_score > all_hits[cid].retrieval_score:
+                        all_hits[cid].retrieval_score = new_score
+                else:
                     all_hits[cid] = RetrievedChunk(
                         text=hit.payload["text"],
                         heading=hit.payload.get("heading", ""),
                         source_type=hit.payload.get("source_type", "narrative"),
-                        page=hit.payload.get("page", 0),
+                        page=hit.payload.get("page"),
                         protocol_id=hit.payload["protocol_id"],
-                        dense_score=hit.score,
+                        retrieval_score=new_score,
                         chunk_id=hit.payload.get("chunk_id", str(cid)),
                     )
 
@@ -291,18 +299,17 @@ class ProtocolIndex:
         if not chunks:
             return []
 
-        # Rerank
-        reranked = self._reranker.rerank(query, chunks, top_k=top_k_rerank)
-
-        # Apply section-priority boost from TA packs
+        # Apply section-priority boost BEFORE reranking (on retrieval scores)
+        # so priority sections are less likely to be dropped by top-k truncation
         if priority_sections:
             priority_lower = [s.lower() for s in priority_sections]
-            for chunk in reranked:
+            for chunk in chunks:
                 heading_lower = chunk.heading.lower()
                 if any(ps in heading_lower for ps in priority_lower):
-                    if chunk.rerank_score is not None:
-                        chunk.rerank_score += priority_boost
-            # Re-sort after boosting
-            reranked.sort(key=lambda c: c.score, reverse=True)
+                    chunk.retrieval_score += priority_boost
 
-        return reranked
+        # Re-sort by boosted retrieval score before reranking
+        chunks.sort(key=lambda c: c.retrieval_score, reverse=True)
+
+        # Rerank (takes top candidates and cross-encodes)
+        return self._reranker.rerank(query, chunks, top_k=top_k_rerank)

@@ -103,9 +103,9 @@ def qc_post_review(packs: dict[str, EvidencePack]) -> list[QCResult]:
     return results
 
 
-def qc_cross_concept(packs: dict[str, EvidencePack]) -> list[QCResult]:
+def qc_cross_concept(packs: dict[str, EvidencePack], stage: str = "pre_review") -> list[QCResult]:
     """
-    Cross-concept consistency checks.
+    Cross-concept consistency checks. Stage-neutral — applies to both pre and post review.
     Dependencies:
     - follow_up_start should reference same anchor as index_date
     - follow_up_end should be after follow_up_start
@@ -119,7 +119,7 @@ def qc_cross_concept(packs: dict[str, EvidencePack]) -> list[QCResult]:
             rule_id="QC-C001",
             level="error",
             concept="follow_up_end",
-            stage="pre_review",
+            stage=stage,
             message="follow_up_start defined but follow_up_end not found.",
             detail="Cannot define observation window without both start and end."
         ))
@@ -130,7 +130,7 @@ def qc_cross_concept(packs: dict[str, EvidencePack]) -> list[QCResult]:
             rule_id="QC-C002",
             level="warning",
             concept="primary_endpoint",
-            stage="pre_review",
+            stage=stage,
             message="Follow-up defined but primary endpoint not found.",
         ))
 
@@ -140,7 +140,7 @@ def qc_cross_concept(packs: dict[str, EvidencePack]) -> list[QCResult]:
             rule_id="QC-C003",
             level="error",
             concept="index_date",
-            stage="pre_review",
+            stage=stage,
             message="index_date not found. All time-anchored concepts depend on this.",
         ))
 
@@ -174,6 +174,40 @@ def qc_missing_concepts(
     return results
 
 
+def qc_quote_in_chunk(
+    packs: dict[str, EvidencePack],
+    chunk_lookup: Optional[dict[str, str]] = None,
+) -> list[QCResult]:
+    """Validate that candidate quoted_text actually appears in its source chunk.
+    chunk_lookup: {chunk_id: chunk_text} from the indexed chunks.
+    If not provided, this check is skipped."""
+    if not chunk_lookup:
+        return []
+
+    results = []
+    for concept, pack in packs.items():
+        for candidate in pack.candidates:
+            if not candidate.chunk_id or candidate.chunk_id not in chunk_lookup:
+                continue
+            chunk_text = chunk_lookup[candidate.chunk_id]
+            # Normalize whitespace for comparison
+            snippet_norm = " ".join(candidate.snippet.split()).lower()
+            chunk_norm = " ".join(chunk_text.split()).lower()
+            if snippet_norm not in chunk_norm:
+                results.append(QCResult(
+                    rule_id="QC-006",
+                    level="warning",
+                    concept=concept,
+                    stage="pre_review",
+                    message=f"Candidate {candidate.candidate_id}: quoted text not found in source chunk.",
+                    detail=(
+                        f"chunk_id={candidate.chunk_id}, "
+                        f"snippet[:60]='{candidate.snippet[:60]}...'"
+                    ),
+                ))
+    return results
+
+
 # Phase 1 implemented concepts
 PHASE1_CONCEPTS = ["index_date", "follow_up_end", "primary_endpoint"]
 
@@ -188,10 +222,10 @@ def run_all_qc(
 
     if stage == "pre_review":
         results.extend(qc_pre_review(packs))
-        results.extend(qc_cross_concept(packs))
+        results.extend(qc_cross_concept(packs, stage="pre_review"))
     elif stage == "post_review":
         results.extend(qc_post_review(packs))
-        results.extend(qc_cross_concept(packs))
+        results.extend(qc_cross_concept(packs, stage="post_review"))
         if expected_concepts:
             results.extend(qc_missing_concepts(
                 packs, expected_concepts,
