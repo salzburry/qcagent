@@ -12,6 +12,7 @@ Steps (always the same, every run):
 """
 
 from __future__ import annotations
+import hashlib
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -32,7 +33,15 @@ class IndexDateExtraction(BaseModel):
     """Schema-constrained LLM output for index date extraction."""
 
     class CandidateExtraction(BaseModel):
-        snippet: str = Field(description="Exact text from protocol supporting this candidate")
+        chunk_id: Optional[str] = Field(
+            default=None,
+            description="chunk_id from the input chunk, for provenance tracking"
+        )
+        quoted_text: str = Field(description="Exact quoted text from the chunk")
+        summary: Optional[str] = Field(
+            default=None,
+            description="Brief normalized summary if the quote needs clarification"
+        )
         section_title: str = Field(description="Section where this was found")
         sponsor_term: str = Field(description="Term used in protocol (e.g. cohort entry)")
         explicit: ExplicitType = Field(description="Whether explicitly stated or inferred")
@@ -67,6 +76,8 @@ Rules:
 - If sections contradict each other, set contradictions_found=true.
 - Rank candidates by confidence — most likely governing definition first.
 - If nothing relevant is found, return empty candidates list with low confidence.
+- IMPORTANT: Return the chunk_id from each chunk header for provenance.
+- Return the exact quoted_text from the protocol, not a paraphrase.
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
@@ -78,7 +89,7 @@ def _build_user_prompt(
     context_parts = []
     for i, chunk in enumerate(chunks, 1):
         context_parts.append(
-            f"[Chunk {i} | Section: {chunk.heading} | "
+            f"[chunk_id={chunk.chunk_id} | Section: {chunk.heading} | "
             f"Type: {chunk.source_type} | Page: {chunk.page} | "
             f"Score: {chunk.score:.2f}]\n{chunk.text}"
         )
@@ -86,7 +97,7 @@ def _build_user_prompt(
 
     warning_block = ""
     if ta_warning:
-        warning_block = f"\n⚠ TA PACK WARNING: {ta_warning}\n"
+        warning_block = f"\nTA PACK WARNING: {ta_warning}\n"
 
     return f"""Protocol ID: {protocol_id}
 {warning_block}
@@ -163,22 +174,30 @@ def find_index_date(
         )
 
     # Step 6: Build EvidencePack from extraction
+    # Build chunk lookup by chunk_id for deterministic provenance
+    chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
+
     candidates = []
-    for c in extraction.candidates:
-        # Find matching retrieved chunk for page/section ref
-        matching_chunk = next(
-            (ch for ch in chunks if c.snippet[:50] in ch.text or ch.text[:50] in c.snippet),
-            None
-        )
+    for i, c in enumerate(extraction.candidates):
+        # Deterministic provenance via chunk_id (not fuzzy snippet matching)
+        matching_chunk = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
+
+        candidate_id = hashlib.sha256(
+            f"{protocol_id}:{CONCEPT}:{i}:{c.quoted_text[:50]}".encode()
+        ).hexdigest()[:12]
+
         candidates.append(EvidenceCandidate(
-            snippet=c.snippet,
+            candidate_id=candidate_id,
+            chunk_id=c.chunk_id,
+            snippet=c.quoted_text,
             page=matching_chunk.page if matching_chunk else None,
             section_title=c.section_title or (matching_chunk.heading if matching_chunk else None),
             source_type=matching_chunk.source_type if matching_chunk else "narrative",
             sponsor_term=c.sponsor_term,
             canonical_term="index_date",
-            retrieval_score=matching_chunk.dense_score if matching_chunk else 0.0,
+            retrieval_score=matching_chunk.dense_score if matching_chunk else None,
             rerank_score=matching_chunk.rerank_score if matching_chunk else None,
+            llm_confidence=c.confidence,
             explicit=c.explicit,
         ))
 
@@ -188,6 +207,7 @@ def find_index_date(
         candidates=candidates,
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
+        overall_confidence=extraction.overall_confidence,
         low_retrieval_signal=len(chunks) < 3,
         adjudicator_used=extraction.overall_confidence < CONFIDENCE_THRESHOLD,
         requires_human_selection=True,

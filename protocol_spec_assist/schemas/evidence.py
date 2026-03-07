@@ -40,14 +40,17 @@ class EvidenceCandidate(BaseModel):
     A single protocol passage that may support a concept.
     Produced by retrieval + reranking.
     """
+    candidate_id: str = ""                  # deterministic ID for stable references
+    chunk_id: Optional[str] = None          # link back to indexed chunk for provenance
     snippet: str
     page: Optional[int] = None
     section_title: Optional[str] = None
     source_type: SourceType = "narrative"
-    sponsor_term: Optional[str] = None     # e.g. "cohort entry" → maps to index_date
-    canonical_term: Optional[str] = None   # normalized term from TA pack
-    retrieval_score: float = Field(ge=0.0, le=1.0)
+    sponsor_term: Optional[str] = None      # e.g. "cohort entry" → maps to index_date
+    canonical_term: Optional[str] = None    # normalized term from TA pack
+    retrieval_score: Optional[float] = None
     rerank_score: Optional[float] = None
+    llm_confidence: Optional[float] = None  # candidate-level LLM confidence
     explicit: ExplicitType = "explicit"
 
 
@@ -66,6 +69,12 @@ class EvidencePack(BaseModel):
     contradiction_detail: Optional[str] = None
     low_retrieval_signal: bool = False      # top candidate score below threshold
     adjudicator_used: bool = False          # was second-pass model invoked?
+
+    # Confidence
+    overall_confidence: Optional[float] = None
+
+    # Concept-specific metadata (preserves concept finder semantics)
+    concept_metadata: Optional[dict] = None
 
     # Human review state
     requires_human_selection: bool = True

@@ -53,12 +53,12 @@ class EvalResult:
     model_used: str
     prompt_version: str
 
-    # Tier 1: Retrieval recall
+    # Tier 1: Retrieval recall — did the right chunk appear?
     gold_in_candidates: bool = False        # Did any candidate contain gold snippet?
     gold_in_top3: bool = False              # Was it in top 3?
-    top_candidate_matches_gold: bool = False
+    top_candidate_matches_gold: bool = False  # Top-1 retrieval quality
 
-    # Tier 2: Selection accuracy
+    # Tier 2: Top candidate quality
     snippet_similarity: float = 0.0         # Simple overlap score 0-1
     section_match: bool = False
     page_match: bool = False
@@ -87,15 +87,20 @@ GOLD_SET_TEMPLATE_HEADERS = [
     "required_sponsor_clarification",
     "notes",
     "created_by",
+    "created_date",
 ]
 
-def create_gold_set_template(output_path: str, protocol_ids: list[str]):
+def create_gold_set_template(
+    output_path: str,
+    protocol_ids: list[str],
+    concepts: Optional[list[str]] = None,
+):
     """
     Create a CSV template for manual gold set collection.
     One row per (protocol, concept) pair.
     Fill in manually by reviewing completed specs + source protocols.
     """
-    concepts_to_collect = [
+    concepts_to_collect = concepts or [
         "index_date",
         "follow_up_end",
         "primary_endpoint",
@@ -115,6 +120,7 @@ def create_gold_set_template(output_path: str, protocol_ids: list[str]):
                 "required_sponsor_clarification": "",  # FILL: yes|no
                 "notes": "",
                 "created_by": "",
+                "created_date": "",
             })
 
     with open(output_path, "w", newline="") as f:
@@ -140,9 +146,10 @@ def load_gold_set(csv_path: str) -> list[GoldRecord]:
                 gold_page=int(row["gold_page"]) if row["gold_page"] else None,
                 gold_explicit=row["gold_explicit"],
                 gold_row_value=row["gold_row_value"],
-                required_sponsor_clarification=row["required_sponsor_clarification"].lower() == "yes",
+                required_sponsor_clarification=row.get("required_sponsor_clarification", "").lower() == "yes",
                 notes=row.get("notes", ""),
                 created_by=row.get("created_by", ""),
+                created_date=row.get("created_date", ""),
             ))
     return records
 
@@ -239,7 +246,7 @@ def run_evaluation(
             writer = csv.DictWriter(f, fieldnames=list(asdict(results[0]).keys()))
             writer.writeheader()
             for r in results:
-                writer.writerows([asdict(r)])
+                writer.writerow(asdict(r))
 
     # Aggregate metrics
     if not results:
@@ -250,7 +257,7 @@ def run_evaluation(
         "n_evaluated": n,
         "retrieval_recall": sum(r.gold_in_candidates for r in results) / n,
         "top3_recall": sum(r.gold_in_top3 for r in results) / n,
-        "top1_accuracy": sum(r.top_candidate_matches_gold for r in results) / n,
+        "top1_retrieval_quality": sum(r.top_candidate_matches_gold for r in results) / n,
         "mean_snippet_similarity": sum(r.snippet_similarity for r in results) / n,
         "section_match_rate": sum(r.section_match for r in results) / n,
         "explicit_type_accuracy": sum(r.explicit_type_correct for r in results) / n,

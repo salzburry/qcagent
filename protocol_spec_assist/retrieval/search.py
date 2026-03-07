@@ -108,10 +108,6 @@ class ProtocolIndex:
         if self._client is None:
             try:
                 from qdrant_client import QdrantClient
-                from qdrant_client.models import (
-                    VectorParams, Distance, SparseVectorParams,
-                    SparseIndexParams
-                )
                 self._client = QdrantClient(path=self._index_dir)
                 self._ensure_collection()
             except ImportError:
@@ -139,10 +135,26 @@ class ProtocolIndex:
             )
             print(f"[Index] Created Qdrant collection: {COLLECTION_NAME}")
 
+    def delete_protocol(self, protocol_id: str):
+        """Delete all indexed chunks for a protocol before re-indexing."""
+        self._load_client()
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        self._client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=Filter(
+                must=[FieldCondition(key="protocol_id", match=MatchValue(value=protocol_id))]
+            ),
+        )
+        print(f"[Index] Deleted existing chunks for {protocol_id}")
+
     def index_protocol(self, chunks: list[dict], protocol_id: str):
         """Embed and upsert all chunks for a protocol."""
         self._load_client()
         from qdrant_client.models import PointStruct, SparseVector
+
+        # Delete existing chunks to prevent duplicates on re-index
+        self.delete_protocol(protocol_id)
 
         print(f"[Index] Indexing {len(chunks)} chunks for {protocol_id}...")
         texts = [c["text"] for c in chunks]
@@ -158,18 +170,20 @@ class ProtocolIndex:
 
         points = []
         for chunk, dense_vec, sparse_weights in zip(chunks, all_dense, all_sparse):
+            # Use deterministic chunk_id if available, else generate UUID
+            point_id = chunk.get("chunk_id", str(uuid.uuid4()))
+
             # Convert sparse weights to Qdrant format
-            sparse_indices = list(range(len(sparse_weights)))
-            sparse_values = list(sparse_weights.values()) if isinstance(sparse_weights, dict) else []
-            sparse_idx = list(sparse_weights.keys()) if isinstance(sparse_weights, dict) else []
+            sparse_idx = [int(k) for k in sparse_weights.keys()] if isinstance(sparse_weights, dict) else []
+            sparse_values = [float(v) for v in sparse_weights.values()] if isinstance(sparse_weights, dict) else []
 
             points.append(PointStruct(
-                id=str(uuid.uuid4()),
+                id=point_id,
                 vector={
                     "dense": dense_vec,
                     "sparse": SparseVector(
-                        indices=[int(i) for i in sparse_idx],
-                        values=[float(v) for v in sparse_values],
+                        indices=sparse_idx,
+                        values=sparse_values,
                     ) if sparse_idx else SparseVector(indices=[], values=[]),
                 },
                 payload={
@@ -179,6 +193,7 @@ class ProtocolIndex:
                     "source_type": chunk.get("source_type", "narrative"),
                     "page": chunk.get("page_start", 0),
                     "is_table_row": chunk.get("is_table_row", False),
+                    "chunk_id": point_id,
                 }
             ))
 
@@ -202,14 +217,13 @@ class ProtocolIndex:
         source_type_filter: Optional[str] = None,
     ) -> list[RetrievedChunk]:
         """
-        Hybrid dense+sparse search with reranking.
-        concept_queries: additional queries to multi-query retrieve
+        Hybrid dense+sparse search with RRF fusion and reranking.
+        Uses Qdrant's native hybrid query with prefetch for true hybrid retrieval.
         """
         self._load_client()
         from qdrant_client.models import (
             Filter, FieldCondition, MatchValue,
-            SparseVector, SearchRequest, PrefetchQuery,
-            FusionQuery, Fusion, QueryRequest, NearestQuery
+            SparseVector, Prefetch, FusionQuery, Fusion
         )
 
         queries = [query] + (concept_queries or [])
@@ -231,22 +245,34 @@ class ProtocolIndex:
                     FieldCondition(key="source_type", match=MatchValue(value=source_type_filter))
                 )
             if not include_tables:
-                from qdrant_client.models import MatchExcept
                 must_conditions.append(
                     FieldCondition(key="source_type", match=MatchValue(value="narrative"))
                 )
 
             search_filter = Filter(must=must_conditions)
 
-            # Dense search
-            dense_results = self._client.search(
+            # FIX: True hybrid retrieval using Qdrant's prefetch + RRF fusion
+            hybrid_results = self._client.query_points(
                 collection_name=COLLECTION_NAME,
-                query_vector=("dense", dense_vec),
-                query_filter=search_filter,
+                prefetch=[
+                    Prefetch(
+                        query=SparseVector(indices=sparse_idx, values=sparse_vals),
+                        using="sparse",
+                        limit=top_k_retrieve,
+                        filter=search_filter,
+                    ),
+                    Prefetch(
+                        query=dense_vec,
+                        using="dense",
+                        limit=top_k_retrieve,
+                        filter=search_filter,
+                    ),
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
                 limit=top_k_retrieve,
             )
 
-            for hit in dense_results:
+            for hit in hybrid_results.points:
                 cid = hit.id
                 if cid not in all_hits:
                     all_hits[cid] = RetrievedChunk(
@@ -256,7 +282,7 @@ class ProtocolIndex:
                         page=hit.payload.get("page", 0),
                         protocol_id=hit.payload["protocol_id"],
                         dense_score=hit.score,
-                        chunk_id=str(cid),
+                        chunk_id=hit.payload.get("chunk_id", str(cid)),
                     )
 
         chunks = list(all_hits.values())

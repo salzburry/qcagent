@@ -101,7 +101,8 @@ def task_run_qc(
     expected_concepts: Optional[list[str]],
 ) -> list[dict]:
     packs = {k: EvidencePack.model_validate(v) for k, v in packs_dict.items()}
-    results = run_all_qc(packs, expected_concepts)
+    # Run pre-review QC only — post-review QC runs after human selection
+    results = run_all_qc(packs, expected_concepts, stage="pre_review")
     print(summarize_qc(results))
     return [vars(r) for r in results]
 
@@ -173,7 +174,7 @@ def protocol_run(
         "primary_endpoint": primary_endpoint_pack,
     }
 
-    # Step 4: QC
+    # Step 4: Pre-review QC
     ta_pack = load_ta_pack(ta_name) if ta_name else None
     expected = ta_pack.expected_concepts if ta_pack else None
     qc_results = task_run_qc(packs, expected)
