@@ -227,6 +227,7 @@ def protocol_run(
     pdf_path: str,
     protocol_id: Optional[str] = None,
     ta_name: Optional[str] = None,
+    data_source_override: Optional[str] = None,
     index_dir: str = "data/index",
     output_dir: str = "data/outputs",
     skip_indexing: bool = False,
@@ -277,10 +278,14 @@ def protocol_run(
     study_period_pack = task_find_study_period(pid, index, client, ta_pack)
     censoring_rules_pack = task_find_censoring_rules(pid, index, client, ta_pack)
 
-    # Step 3b: Detect data source from study_period extraction for source-specific definitions
-    sp_meta = study_period_pack.get("concept_metadata") or {}
-    detected_source = detect_source(sp_meta.get("data_source", ""))
-    logger.info(f"Detected data source: {detected_source}")
+    # Step 3b: Data source — explicit override takes precedence over auto-detection
+    if data_source_override:
+        detected_source = data_source_override
+        logger.info(f"Using explicit data source override: {detected_source}")
+    else:
+        sp_meta = study_period_pack.get("concept_metadata") or {}
+        detected_source = detect_source(sp_meta.get("data_source", ""))
+        logger.info(f"Auto-detected data source: {detected_source}")
 
     demographics_pack = task_find_demographics(pid, index, client, ta_pack, detected_source)
     clinical_chars_pack = task_find_clinical_characteristics(pid, index, client, ta_pack, detected_source)
@@ -330,7 +335,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Protocol Spec Assist — Evidence Extraction")
     parser.add_argument("pdf", help="Protocol PDF path")
     parser.add_argument("--protocol-id", help="Protocol identifier (default: filename)")
-    parser.add_argument("--ta", help="Therapeutic area: oncology | cardiovascular")
+    parser.add_argument("--ta", help="Therapeutic area: oncology | cardiovascular | respiratory | immunology | vaccines")
+    parser.add_argument("--data-source", help="Data source override: cota | flatiron | optum_cdm | optum_ehr | marketscan | inalon | quest")
     parser.add_argument("--index-dir", default="data/index")
     parser.add_argument("--output-dir", default="data/outputs")
     parser.add_argument("--skip-indexing", action="store_true")
@@ -340,6 +346,7 @@ if __name__ == "__main__":
         pdf_path=args.pdf,
         protocol_id=args.protocol_id,
         ta_name=args.ta,
+        data_source_override=args.data_source,
         index_dir=args.index_dir,
         output_dir=args.output_dir,
         skip_indexing=args.skip_indexing,

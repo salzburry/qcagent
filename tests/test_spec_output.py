@@ -402,9 +402,10 @@ def test_demographics_merge_with_static():
         explicit="explicit", confidence=0.95,
         reasoning="Found in protocol",
     )]
-    merged = _merge_with_static_template(llm_vars, STATIC_TEMPLATE)
-    # Should have all template vars + LLM's custom AGE
+    merged, unmapped = _merge_with_static_template(llm_vars, STATIC_TEMPLATE)
+    # Should have all template vars (LLM's custom AGE replaces the static one)
     assert len(merged) == len(STATIC_TEMPLATE)
+    assert len(unmapped) == 0  # AGE is in template, no extras
     # AGE should use LLM definition
     age_var = next(v for v in merged if v.variable_name == "AGE")
     assert age_var.definition == "Custom AGE definition from protocol"
@@ -413,6 +414,28 @@ def test_demographics_merge_with_static():
     sex_var = next(v for v in merged if v.variable_name == "SEX")
     assert sex_var.explicit == "inferred"
     assert sex_var.confidence == 0.5
+
+
+def test_demographics_merge_unmapped_goes_to_bucket():
+    """Test that LLM variables not in template go to unmapped bucket, not into merged."""
+    from protocol_spec_assist.concepts.demographics import (
+        DemographicsExtraction, _merge_with_static_template, STATIC_TEMPLATE,
+    )
+    VarClass = DemographicsExtraction.VariableExtraction
+    # LLM found ECOG (does not belong in demographics template)
+    llm_vars = [VarClass(
+        chunk_id="ch1", time_period="PRE_INT", variable_name="ECOG",
+        label="ECOG Performance Status", values="0;1;2;3;4",
+        definition="ECOG from clinical notes",
+        explicit="explicit", confidence=0.9,
+        reasoning="Found in protocol",
+    )]
+    merged, unmapped = _merge_with_static_template(llm_vars, STATIC_TEMPLATE)
+    # ECOG should NOT be in merged (it's not a demographics variable)
+    assert all(v.variable_name != "ECOG" for v in merged)
+    # ECOG should be in the unmapped bucket
+    assert len(unmapped) == 1
+    assert unmapped[0].variable_name == "ECOG"
 
 
 # ── Excel writer tests ──────────────────────────────────────────────────────

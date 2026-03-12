@@ -46,6 +46,66 @@ def test_is_resolved_true_with_valid_id():
     assert pack.selected_candidate.candidate_id == "abc"
 
 
+def test_is_resolved_with_multi_row_selection():
+    """Multi-row concepts resolved via selected_candidate_ids."""
+    pack = EvidencePack(
+        protocol_id="P001",
+        concept="eligibility_inclusion",
+        candidates=[
+            EvidenceCandidate(candidate_id="inc1", snippet="age >= 18"),
+            EvidenceCandidate(candidate_id="inc2", snippet="confirmed diagnosis"),
+        ],
+        selected_candidate_ids=["inc1", "inc2"],
+    )
+    assert pack.is_resolved
+    assert len(pack.selected_candidates) == 2
+
+
+def test_is_resolved_with_reviewer_override_only():
+    """Pack resolved via reviewer_override even without candidate selection."""
+    pack = EvidencePack(
+        protocol_id="P001",
+        concept="index_date",
+        candidates=[],
+        reviewer_override="Custom definition from reviewer",
+    )
+    assert pack.is_resolved
+    assert pack.governing_text == "Custom definition from reviewer"
+
+
+def test_generation_mode_reviewed_with_multi_row():
+    """generation_mode = reviewed when selected_candidate_ids is set."""
+    from protocol_spec_assist.spec_output.spec_schema import build_program_spec
+    packs = {
+        "eligibility_inclusion": EvidencePack(
+            protocol_id="P001",
+            concept="eligibility_inclusion",
+            candidates=[
+                EvidenceCandidate(candidate_id="inc1", snippet="age >= 18"),
+            ],
+            selected_candidate_ids=["inc1"],
+        ),
+    }
+    spec = build_program_spec(packs, protocol_id="P001")
+    assert spec.generation_mode == "reviewed"
+
+
+def test_generation_mode_reviewed_with_override():
+    """generation_mode = reviewed when reviewer_override is set."""
+    from protocol_spec_assist.spec_output.spec_schema import build_program_spec
+    packs = {
+        "index_date": EvidencePack(
+            protocol_id="P001",
+            concept="index_date",
+            candidates=[],
+            reviewer_override="Manual index date definition",
+        ),
+    }
+    spec = build_program_spec(packs, protocol_id="P001")
+    assert spec.generation_mode == "reviewed"
+    assert spec.important_dates[0].definition == "Manual index date definition"
+
+
 # ── Fix 3: Page tracking uses None, not 0 ───────────────────────────────────
 
 def test_parsed_section_page_none():
