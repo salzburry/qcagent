@@ -285,7 +285,7 @@ def build_program_spec(
     # Determine generation mode — reviewed if any pack has review state set
     any_reviewed = any(
         p.selected_candidate_id is not None
-        or p.selected_candidate_ids is not None
+        or bool(p.selected_candidate_ids)
         or p.reviewer_override is not None
         for p in packs.values()
     )

@@ -280,8 +280,8 @@ def protocol_run(
 
     # Step 3b: Data source — explicit override takes precedence over auto-detection
     if data_source_override:
-        detected_source = data_source_override
-        logger.info(f"Using explicit data source override: {detected_source}")
+        detected_source = detect_source(data_source_override)
+        logger.info(f"Using explicit data source override: {data_source_override} → {detected_source}")
     else:
         sp_meta = study_period_pack.get("concept_metadata") or {}
         detected_source = detect_source(sp_meta.get("data_source", ""))

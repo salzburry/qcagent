@@ -28,8 +28,8 @@ from typing import Optional
 _SOURCE_KEYWORDS = {
     "cota": ["cota", "cota ehr", "cota real-world"],
     "flatiron": ["flatiron", "flatiron health", "flatiron ehr"],
-    "optum_cdm": ["optum cdm", "optum clinformatics", "clinformatics"],
-    "optum_ehr": ["optum ehr", "optum electronic"],
+    "optum_cdm": ["optum_cdm", "optum cdm", "optum clinformatics", "clinformatics"],
+    "optum_ehr": ["optum_ehr", "optum ehr", "optum electronic"],
     "marketscan": ["marketscan", "ibm marketscan", "truven", "merative"],
     "inalon": ["inalon", "inovalon"],
     "quest": ["quest", "quest diagnostics"],

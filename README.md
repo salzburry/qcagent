@@ -231,17 +231,17 @@ Each run produces 4 artifacts in `data/outputs/`:
 | `{protocol_id}_evidence_packs.json` | Raw evidence packs + QC results |
 | `{protocol_id}_spec.json` | Structured ProgramSpec (machine-readable) |
 | `{protocol_id}_spec.html` | Self-contained HTML preview with confidence badges |
-| `{protocol_id}_spec.xlsx` | Formatted Excel workbook (5 tabs, color-coded) |
+| `{protocol_id}_spec.xlsx` | Formatted Excel workbook (10 sheets, color-coded) |
 
 ---
 
 ## v0.3 Changes
 
 ### New features
-1. **4 new concept finders** — eligibility_inclusion, eligibility_exclusion, study_period, censoring_rules
+1. **9 new concept finders** — eligibility_inclusion, eligibility_exclusion, study_period, censoring_rules, demographics, clinical_characteristics, biomarkers, lab_variables, treatment_variables
 2. **Draft spec generation** — EvidencePacks → ProgramSpec with JSON + HTML + Excel outputs
 3. **HTML preview** — self-contained HTML with confidence badges, explicit/inferred markers, QC warnings
-4. **Excel workbook** — 5 tabs (Overview, Inclusion, Exclusion, Endpoints, Censoring Rules), color-coded by confidence
+4. **Excel workbook** — 10 sheets (1.Cover, 2.QC Review, 3.Data Prep, 4.StudyPop, 5A.Demos, 5B.ClinChars, 5C.BioVars, 5D.LabVars, 6.TreatVars, 7.Outcomes), color-coded by confidence
 5. **Spec uses selected candidate** — uses `selected_candidate_id` when reviewed, top-ranked when draft
 6. **qc_quote_in_chunk wired** — validates that candidate snippets appear in source chunks
 7. **Device-aware retrieval** — auto-detects GPU/CPU, respects `RETRIEVAL_DEVICE` and `RETRIEVAL_FP16` env vars
