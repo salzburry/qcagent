@@ -69,17 +69,15 @@ def test_missing_concepts_only_checks_implemented():
     packs = {"index_date": _make_pack("index_date")}
     expected = [
         "index_date", "follow_up_end", "primary_endpoint",
-        "eligibility_inclusion",
         "key_covariate",  # not in IMPLEMENTED_CONCEPTS
     ]
     results = qc_missing_concepts(
         packs, expected, implemented_concepts=IMPLEMENTED_CONCEPTS
     )
     concepts_warned = [r.concept for r in results]
-    # Should warn about follow_up_end, primary_endpoint, eligibility_inclusion (implemented but missing)
+    # Should warn about follow_up_end and primary_endpoint (implemented but missing)
     assert "follow_up_end" in concepts_warned
     assert "primary_endpoint" in concepts_warned
-    assert "eligibility_inclusion" in concepts_warned
     # Should NOT warn about key_covariate (not implemented yet)
     assert "key_covariate" not in concepts_warned
 

@@ -1,5 +1,5 @@
 """
-Eligibility criteria concept finders: inclusion and exclusion.
+Eligibility criteria concept finders (inclusion + exclusion).
 Same fixed workflow pattern as index_date.py.
 """
 
@@ -29,49 +29,116 @@ class InclusionCriteriaExtraction(BaseModel):
     class CriterionExtraction(BaseModel):
         chunk_id: Optional[str] = None
         quoted_text: str
-        criterion_label: str = Field(description="Short label, e.g. 'Age ≥ 18' or 'Confirmed diagnosis'")
-        domain: str = Field(description="demographic | clinical | treatment | enrollment | other")
+        criterion_label: str = Field(description="Short label, e.g. 'Age requirement'")
+        domain: str = Field(
+            description="demographic | clinical | treatment | enrollment | other"
+        )
         operational_detail: Optional[str] = Field(
             default=None,
-            description="Operational detail if specified (e.g. '2 ICD-10 codes within 90 days')"
+            description="Operational detail: lookback window, code list ref, etc."
         )
         lookback_window: Optional[str] = Field(
             default=None,
-            description="Time window if specified (e.g. '6 months prior to index')"
+            description="Time window if applicable, e.g. '12 months prior to index'"
         )
         section_title: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
         reasoning: str
 
-    criteria: list[CriterionExtraction] = Field(
-        description="All inclusion criteria found, in order of appearance"
-    )
+    criteria: list[CriterionExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT_INC = """You are an expert RWE protocol analyst.
-Extract ALL inclusion criteria (eligibility criteria for cohort entry) from the protocol text.
+Extract ALL inclusion criteria from the protocol text.
 
-Inclusion criteria define who qualifies to enter the study cohort. They may include:
+Inclusion criteria define who is eligible for the study. They may include:
 - Age requirements
-- Diagnosis requirements (confirmed diagnosis, specific codes)
-- Enrollment/activity requirements (continuous enrollment, database activity)
-- Treatment requirements (received specific therapy)
-- Follow-up requirements (minimum observation period)
-- Clinical requirements (lab values, staging, performance status)
+- Diagnosis requirements (with ICD codes or clinical descriptions)
+- Prior treatment requirements
+- Enrollment/database requirements (continuous enrollment, data availability)
+- Lab values, clinical measures
 
 Rules:
-- Extract EVERY inclusion criterion. Do not skip any.
-- For each criterion, identify the domain (demographic, clinical, treatment, enrollment, other).
-- If an operational definition is given (e.g. "2 ICD codes within 90 days"), capture it.
-- If a lookback window is given (e.g. "6 months prior to index"), capture it.
-- If criteria are implied but not stated, mark as "inferred".
+- Extract EVERY distinct inclusion criterion — do not merge separate criteria.
+- Classify each by domain: demographic, clinical, treatment, enrollment, other.
+- Capture lookback windows (e.g. "12 months prior to index date").
+- Capture operational details like code list references.
+- If criteria conflict across sections, set contradictions_found=true.
 - IMPORTANT: Return the chunk_id from each chunk header for provenance.
 - Return the exact quoted_text from the protocol, not a paraphrase.
 - Respond ONLY with valid JSON matching the schema exactly."""
+
+
+def find_inclusion_criteria(
+    protocol_id: str,
+    index: ProtocolIndex,
+    client: LocalModelClient,
+    ta_pack: Optional[TAPack] = None,
+) -> EvidencePack:
+
+    queries = build_query_bank(
+        "inclusion criteria eligible patients patient selection qualifying criteria",
+        ta_pack, CONCEPT_INC,
+    )
+
+    priority_sections = get_section_priority(ta_pack, CONCEPT_INC)
+    chunks = index.search(
+        query=queries[0],
+        protocol_id=protocol_id,
+        concept_queries=queries[1:],
+        top_k_retrieve=25,
+        top_k_rerank=10,
+        include_tables=True,
+        priority_sections=priority_sections,
+    )
+
+    if not chunks:
+        return EvidencePack(
+            protocol_id=protocol_id, concept=CONCEPT_INC,
+            candidates=[], low_retrieval_signal=True,
+            finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
+        )
+
+    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_INC)
+    context = _build_context(chunks, ta_warning, protocol_id)
+
+    result = client.extract(
+        system_prompt=SYSTEM_PROMPT_INC,
+        user_prompt=context,
+        schema=InclusionCriteriaExtraction,
+        use_adjudicator=False,
+        prompt_version=PROMPT_VERSION,
+    )
+    extraction, model_used = result.parsed, result.model_used
+
+    used_adjudicator = False
+    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
+        try:
+            result = client.extract(
+                system_prompt=SYSTEM_PROMPT_INC,
+                user_prompt=context,
+                schema=InclusionCriteriaExtraction,
+                use_adjudicator=True,
+                prompt_version=PROMPT_VERSION,
+            )
+            extraction, model_used = result.parsed, result.model_used
+            used_adjudicator = True
+        except Exception as e:
+            print(f"[InclusionFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+
+    pack = _build_eligibility_pack(
+        CONCEPT_INC, protocol_id, extraction, chunks, model_used, used_adjudicator,
+    )
+
+    print(f"[InclusionFinder] Done. "
+          f"{len(pack.candidates)} criteria | "
+          f"confidence={extraction.overall_confidence:.2f}")
+
+    return pack
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,24 +152,24 @@ class ExclusionCriteriaExtraction(BaseModel):
     class CriterionExtraction(BaseModel):
         chunk_id: Optional[str] = None
         quoted_text: str
-        criterion_label: str = Field(description="Short label, e.g. 'Prior malignancy' or 'Clinical trial'")
-        domain: str = Field(description="demographic | clinical | treatment | enrollment | other")
+        criterion_label: str = Field(description="Short label, e.g. 'Prior cancer'")
+        domain: str = Field(
+            description="demographic | clinical | treatment | enrollment | other"
+        )
         operational_detail: Optional[str] = Field(
             default=None,
-            description="Operational detail if specified (e.g. 'any malignancy within 5 years')"
+            description="Operational detail: lookback window, code list ref, etc."
         )
         lookback_window: Optional[str] = Field(
             default=None,
-            description="Time window if specified (e.g. '5 years prior to index')"
+            description="Time window if applicable, e.g. '6 months prior to index'"
         )
         section_title: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
         reasoning: str
 
-    criteria: list[CriterionExtraction] = Field(
-        description="All exclusion criteria found, in order of appearance"
-    )
+    criteria: list[CriterionExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(ge=0.0, le=1.0)
@@ -111,24 +178,90 @@ class ExclusionCriteriaExtraction(BaseModel):
 SYSTEM_PROMPT_EXC = """You are an expert RWE protocol analyst.
 Extract ALL exclusion criteria from the protocol text.
 
-Exclusion criteria define who is removed from the study cohort after initial identification.
-They may include:
-- Prior conditions (e.g. prior malignancy, pregnancy)
-- Missing data (e.g. missing gender, missing date of birth)
-- Clinical trial participation
-- Prior/concurrent treatment (washout violations)
-- Insufficient data quality or coverage
-- Age-related (e.g. pediatric exclusion)
+Exclusion criteria define who is NOT eligible. They may include:
+- Prior treatments or procedures
+- Comorbidities or diagnoses
+- Lab values out of range
+- Data quality requirements (insufficient data history)
+- Pregnancy, age limits, etc.
 
 Rules:
-- Extract EVERY exclusion criterion. Do not skip any.
-- For each criterion, identify the domain (demographic, clinical, treatment, enrollment, other).
-- If an operational definition is given, capture it.
-- If a lookback window is given (e.g. "within 5 years of index"), capture it.
-- If criteria are implied but not stated, mark as "inferred".
+- Extract EVERY distinct exclusion criterion — do not merge separate criteria.
+- Classify each by domain: demographic, clinical, treatment, enrollment, other.
+- Capture lookback windows and washout periods.
+- Capture operational details like code list references.
+- If criteria conflict across sections, set contradictions_found=true.
 - IMPORTANT: Return the chunk_id from each chunk header for provenance.
 - Return the exact quoted_text from the protocol, not a paraphrase.
 - Respond ONLY with valid JSON matching the schema exactly."""
+
+
+def find_exclusion_criteria(
+    protocol_id: str,
+    index: ProtocolIndex,
+    client: LocalModelClient,
+    ta_pack: Optional[TAPack] = None,
+) -> EvidencePack:
+
+    queries = build_query_bank(
+        "exclusion criteria ineligible not eligible prior therapy washout",
+        ta_pack, CONCEPT_EXC,
+    )
+
+    priority_sections = get_section_priority(ta_pack, CONCEPT_EXC)
+    chunks = index.search(
+        query=queries[0],
+        protocol_id=protocol_id,
+        concept_queries=queries[1:],
+        top_k_retrieve=25,
+        top_k_rerank=10,
+        include_tables=True,
+        priority_sections=priority_sections,
+    )
+
+    if not chunks:
+        return EvidencePack(
+            protocol_id=protocol_id, concept=CONCEPT_EXC,
+            candidates=[], low_retrieval_signal=True,
+            finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
+        )
+
+    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_EXC)
+    context = _build_context(chunks, ta_warning, protocol_id)
+
+    result = client.extract(
+        system_prompt=SYSTEM_PROMPT_EXC,
+        user_prompt=context,
+        schema=ExclusionCriteriaExtraction,
+        use_adjudicator=False,
+        prompt_version=PROMPT_VERSION,
+    )
+    extraction, model_used = result.parsed, result.model_used
+
+    used_adjudicator = False
+    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
+        try:
+            result = client.extract(
+                system_prompt=SYSTEM_PROMPT_EXC,
+                user_prompt=context,
+                schema=ExclusionCriteriaExtraction,
+                use_adjudicator=True,
+                prompt_version=PROMPT_VERSION,
+            )
+            extraction, model_used = result.parsed, result.model_used
+            used_adjudicator = True
+        except Exception as e:
+            print(f"[ExclusionFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+
+    pack = _build_eligibility_pack(
+        CONCEPT_EXC, protocol_id, extraction, chunks, model_used, used_adjudicator,
+    )
+
+    print(f"[ExclusionFinder] Done. "
+          f"{len(pack.candidates)} criteria | "
+          f"confidence={extraction.overall_confidence:.2f}")
+
+    return pack
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -137,7 +270,7 @@ def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], prot
     parts = [f"Protocol ID: {protocol_id}"]
     if ta_warning:
         parts.append(f"\nTA PACK WARNING: {ta_warning}\n")
-    for i, c in enumerate(chunks, 1):
+    for c in chunks:
         parts.append(
             f"[chunk_id={c.chunk_id} | Section: {c.heading} | Type: {c.source_type} | "
             f"Page: {c.page} | Score: {c.score:.2f}]\n{c.text}"
@@ -156,9 +289,7 @@ def _build_eligibility_pack(
     chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
 
     candidates = []
-    candidate_metadata = {}
-
-    for i, c in enumerate(extraction.criteria):
+    for c in extraction.criteria:
         matching = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
 
         candidate_id = hashlib.sha256(
@@ -180,13 +311,6 @@ def _build_eligibility_pack(
             explicit=c.explicit,
         ))
 
-        candidate_metadata[candidate_id] = {
-            "criterion_label": c.criterion_label,
-            "domain": c.domain,
-            "operational_detail": c.operational_detail,
-            "lookback_window": c.lookback_window,
-        }
-
     low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
     if chunks and chunks[0].rerank_score is not None:
         low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
@@ -204,137 +328,16 @@ def _build_eligibility_pack(
         finder_version=FINDER_VERSION,
         model_used=model_used,
         prompt_version=PROMPT_VERSION,
-        concept_metadata={"per_candidate": candidate_metadata},
     )
 
-    return pack
-
-
-# ── Main finder functions ────────────────────────────────────────────────────
-
-def find_inclusion_criteria(
-    protocol_id: str,
-    index: ProtocolIndex,
-    client: LocalModelClient,
-    ta_pack: Optional[TAPack] = None,
-) -> EvidencePack:
-
-    queries = build_query_bank(
-        "inclusion criteria eligibility patient selection qualifying criteria",
-        ta_pack, CONCEPT_INC,
-    )
-
-    priority_sections = get_section_priority(ta_pack, CONCEPT_INC)
-    chunks = index.search(
-        query=queries[0],
-        protocol_id=protocol_id,
-        concept_queries=queries[1:],
-        top_k_retrieve=25,
-        top_k_rerank=12,
-        include_tables=True,
-        priority_sections=priority_sections,
-    )
-
-    if not chunks:
-        return EvidencePack(
-            protocol_id=protocol_id, concept=CONCEPT_INC,
-            candidates=[], low_retrieval_signal=True,
-            finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
-        )
-
-    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_INC)
-    context = _build_context(chunks, ta_warning, protocol_id)
-
-    result = client.extract(
-        system_prompt=SYSTEM_PROMPT_INC,
-        user_prompt=context,
-        schema=InclusionCriteriaExtraction,
-        use_adjudicator=False,
-    )
-    extraction, model_used = result.parsed, result.model_used
-
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_INC,
-                user_prompt=context,
-                schema=InclusionCriteriaExtraction,
-                use_adjudicator=True,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[InclusionCriteriaFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
-
-    pack = _build_eligibility_pack(CONCEPT_INC, protocol_id, extraction, chunks, model_used, used_adjudicator)
-
-    print(f"[InclusionCriteriaFinder] Done. "
-          f"{len(pack.candidates)} criteria | "
-          f"confidence={extraction.overall_confidence:.2f}")
-
-    return pack
-
-
-def find_exclusion_criteria(
-    protocol_id: str,
-    index: ProtocolIndex,
-    client: LocalModelClient,
-    ta_pack: Optional[TAPack] = None,
-) -> EvidencePack:
-
-    queries = build_query_bank(
-        "exclusion criteria ineligible not eligible prior condition washout",
-        ta_pack, CONCEPT_EXC,
-    )
-
-    priority_sections = get_section_priority(ta_pack, CONCEPT_EXC)
-    chunks = index.search(
-        query=queries[0],
-        protocol_id=protocol_id,
-        concept_queries=queries[1:],
-        top_k_retrieve=25,
-        top_k_rerank=12,
-        include_tables=True,
-        priority_sections=priority_sections,
-    )
-
-    if not chunks:
-        return EvidencePack(
-            protocol_id=protocol_id, concept=CONCEPT_EXC,
-            candidates=[], low_retrieval_signal=True,
-            finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
-        )
-
-    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_EXC)
-    context = _build_context(chunks, ta_warning, protocol_id)
-
-    result = client.extract(
-        system_prompt=SYSTEM_PROMPT_EXC,
-        user_prompt=context,
-        schema=ExclusionCriteriaExtraction,
-        use_adjudicator=False,
-    )
-    extraction, model_used = result.parsed, result.model_used
-
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_EXC,
-                user_prompt=context,
-                schema=ExclusionCriteriaExtraction,
-                use_adjudicator=True,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[ExclusionCriteriaFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
-
-    pack = _build_eligibility_pack(CONCEPT_EXC, protocol_id, extraction, chunks, model_used, used_adjudicator)
-
-    print(f"[ExclusionCriteriaFinder] Done. "
-          f"{len(pack.candidates)} criteria | "
-          f"confidence={extraction.overall_confidence:.2f}")
+    # Per-candidate metadata with domain/lookback info
+    per_candidate = {}
+    for ec, cand in zip(extraction.criteria, pack.candidates):
+        per_candidate[cand.candidate_id] = {
+            "domain": ec.domain,
+            "operational_detail": ec.operational_detail,
+            "lookback_window": ec.lookback_window,
+        }
+    pack.concept_metadata = {"per_candidate": per_candidate}
 
     return pack

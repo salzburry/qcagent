@@ -1,220 +1,204 @@
-"""Tests for program spec schema, HTML renderer, and Excel writer."""
+"""Tests for spec output layer: schema, HTML renderer, Excel writer."""
+
 import json
-import tempfile
-from pathlib import Path
+import pytest
+from protocol_spec_assist.schemas.evidence import EvidencePack, EvidenceCandidate
+from protocol_spec_assist.spec_output.spec_schema import (
+    ProgramSpec, build_program_spec, SpecEntry, CriterionEntry,
+)
+from protocol_spec_assist.spec_output.html_renderer import render_html
 
-from protocol_spec_assist.spec_output.spec_schema import ProgramSpec, build_program_spec
-from protocol_spec_assist.spec_output.html_renderer import render_html, save_html
+
+def _make_pack(concept: str, n_candidates: int = 2, **kwargs) -> EvidencePack:
+    candidates = [
+        EvidenceCandidate(
+            candidate_id=f"c{i}",
+            snippet=f"Evidence text {i} for {concept}",
+            page=i + 1,
+            sponsor_term=f"term_{i}",
+            llm_confidence=0.9 - i * 0.1,
+            explicit="explicit" if i == 0 else "inferred",
+        )
+        for i in range(n_candidates)
+    ]
+    return EvidencePack(
+        protocol_id="P001",
+        concept=concept,
+        candidates=candidates,
+        overall_confidence=0.85,
+        **kwargs,
+    )
 
 
-# ── ProgramSpec schema tests ──────────────────────────────────────────────────
+# ── ProgramSpec schema tests ────────────────────────────────────────────────
 
 def test_program_spec_defaults():
-    spec = ProgramSpec(protocol_id="TEST001")
-    assert spec.protocol_id == "TEST001"
+    spec = ProgramSpec()
+    assert spec.protocol_id == ""
+    assert spec.spec_version == "0.3.0"
+    assert spec.generation_mode == "draft"
     assert spec.inclusion_criteria == []
     assert spec.exclusion_criteria == []
-    assert spec.endpoints == []
     assert spec.censoring_rules == []
-    assert spec.generator_version == "0.3.0"
 
 
-def test_program_spec_serializes():
-    spec = ProgramSpec(
-        protocol_id="TEST001",
-        design_type="retrospective cohort",
-        study_period_start="2016-01-01",
-        study_period_end="2024-06-30",
-        data_source="Flatiron LBCL",
-    )
+def test_program_spec_serialization():
+    spec = ProgramSpec(protocol_id="P001")
     data = spec.model_dump()
-    assert data["protocol_id"] == "TEST001"
-    assert data["design_type"] == "retrospective cohort"
-    assert data["data_source"] == "Flatiron LBCL"
+    assert data["protocol_id"] == "P001"
+    # Roundtrip
+    spec2 = ProgramSpec.model_validate(data)
+    assert spec2.protocol_id == "P001"
 
 
-# ── build_program_spec tests ─────────────────────────────────────────────────
+# ── build_program_spec tests ────────────────────────────────────────────────
 
-def _make_evidence_packs():
-    """Create minimal evidence pack dicts for testing."""
-    return {
-        "index_date": {
-            "protocol_id": "TEST001",
-            "concept": "index_date",
-            "candidates": [
-                {
-                    "candidate_id": "c1",
-                    "snippet": "Index date is the first qualifying diagnosis date.",
-                    "sponsor_term": "first qualifying diagnosis",
-                    "llm_confidence": 0.85,
-                    "page": 12,
-                    "section_title": "Study Design",
-                    "explicit": "explicit",
-                }
-            ],
-            "overall_confidence": 0.85,
-            "low_retrieval_signal": False,
-            "contradictions_found": False,
-        },
-        "eligibility_inclusion": {
-            "protocol_id": "TEST001",
-            "concept": "eligibility_inclusion",
-            "candidates": [
-                {
-                    "candidate_id": "inc1",
-                    "snippet": "Patients must be aged 18 years or older.",
-                    "sponsor_term": "Age >= 18",
-                    "llm_confidence": 0.92,
-                    "page": 8,
-                    "section_title": "Eligibility",
-                    "explicit": "explicit",
-                },
-                {
-                    "candidate_id": "inc2",
-                    "snippet": "Minimum 30 days of follow-up required.",
-                    "sponsor_term": "Min follow-up 30d",
-                    "llm_confidence": 0.78,
-                    "page": 8,
-                    "section_title": "Eligibility",
-                    "explicit": "explicit",
-                },
-            ],
-            "concept_metadata": {
-                "per_candidate": {
-                    "inc1": {"criterion_label": "Age >= 18", "domain": "demographic", "operational_detail": None, "lookback_window": None},
-                    "inc2": {"criterion_label": "Min follow-up 30d", "domain": "enrollment", "operational_detail": "30 days from index", "lookback_window": None},
-                }
-            },
-            "overall_confidence": 0.85,
-            "low_retrieval_signal": False,
-            "contradictions_found": False,
-        },
-        "study_period": {
-            "protocol_id": "TEST001",
-            "concept": "study_period",
-            "candidates": [],
-            "concept_metadata": {
-                "study_period_start": "January 2016",
-                "study_period_end": "June 2024",
-                "data_source": "Flatiron LBCL",
-                "data_source_version": "Q2 2024",
-                "design_type": "retrospective cohort",
-            },
-            "overall_confidence": 0.90,
-            "low_retrieval_signal": False,
-            "contradictions_found": False,
-        },
+def test_build_spec_from_single_concept():
+    packs = {"index_date": _make_pack("index_date")}
+    spec = build_program_spec(packs, protocol_id="P001")
+    assert spec.protocol_id == "P001"
+    assert spec.generation_mode == "draft"
+    assert "Evidence text 0" in spec.index_date.value
+
+
+def test_build_spec_uses_selected_candidate():
+    pack = _make_pack("index_date")
+    pack.select_candidate("c1")
+    packs = {"index_date": pack}
+    spec = build_program_spec(packs, protocol_id="P001")
+    assert spec.generation_mode == "reviewed"
+    assert "Evidence text 1" in spec.index_date.value
+
+
+def test_build_spec_with_all_concepts():
+    packs = {
+        "index_date": _make_pack("index_date"),
+        "follow_up_end": _make_pack("follow_up_end"),
+        "primary_endpoint": _make_pack("primary_endpoint"),
+        "eligibility_inclusion": _make_pack("eligibility_inclusion",
+            concept_metadata={"per_candidate": {
+                "c0": {"domain": "demographic", "lookback_window": None, "operational_detail": None},
+                "c1": {"domain": "clinical", "lookback_window": "12 months", "operational_detail": None},
+            }}),
+        "eligibility_exclusion": _make_pack("eligibility_exclusion",
+            concept_metadata={"per_candidate": {
+                "c0": {"domain": "treatment", "lookback_window": "6 months", "operational_detail": None},
+            }}),
+        "study_period": _make_pack("study_period",
+            concept_metadata={
+                "study_period_start": "2020-01-01",
+                "study_period_end": "2023-12-31",
+                "data_source": "Optum CDM",
+                "data_source_version": "Q4 2023",
+                "design_type": "retrospective_cohort",
+            }),
+        "censoring_rules": _make_pack("censoring_rules",
+            concept_metadata={"per_candidate": {
+                "c0": {"rule_type": "event_based", "applies_to": "primary endpoint"},
+            }}),
     }
+    spec = build_program_spec(packs, protocol_id="P001")
 
-
-def test_build_program_spec_from_packs():
-    packs = _make_evidence_packs()
-    spec = build_program_spec("TEST001", packs, protocol_title="Test Protocol")
-
-    assert spec.protocol_id == "TEST001"
-    assert spec.protocol_title == "Test Protocol"
-    assert spec.index_date_definition == "Index date is the first qualifying diagnosis date."
-    assert spec.index_date_confidence == 0.85
-    assert spec.study_period_start == "January 2016"
-    assert spec.study_period_end == "June 2024"
-    assert spec.data_source == "Flatiron LBCL"
-    assert spec.design_type == "retrospective cohort"
+    assert spec.index_date.value != ""
+    assert spec.follow_up_end.value != ""
+    assert spec.primary_endpoint.value != ""
     assert len(spec.inclusion_criteria) == 2
-    assert spec.inclusion_criteria[0].criterion_id == "INC-01"
-    assert spec.inclusion_criteria[0].criterion_label == "Age >= 18"
-    assert spec.inclusion_criteria[1].domain == "enrollment"
-    assert "index_date" in spec.concepts_extracted
-    assert "study_period" in spec.concepts_extracted
+    assert spec.inclusion_criteria[0].domain == "demographic"
+    assert spec.inclusion_criteria[1].lookback_window == "12 months"
+    assert len(spec.exclusion_criteria) >= 1
+    assert spec.study_design.data_source.value == "Optum CDM"
+    assert spec.study_design.design_type.value == "retrospective_cohort"
+    assert len(spec.censoring_rules) >= 1
 
 
-def test_build_program_spec_empty_packs():
-    spec = build_program_spec("EMPTY", {})
-    assert spec.protocol_id == "EMPTY"
-    assert spec.inclusion_criteria == []
-    assert spec.concepts_extracted == []
+def test_build_spec_empty_packs():
+    spec = build_program_spec({}, protocol_id="P001")
+    assert spec.protocol_id == "P001"
+    assert spec.index_date.value == ""
 
 
-# ── HTML renderer tests ──────────────────────────────────────────────────────
+# ── HTML renderer tests ─────────────────────────────────────────────────────
 
-def test_render_html_contains_key_elements():
-    packs = _make_evidence_packs()
-    spec = build_program_spec("TEST001", packs, protocol_title="Test Protocol")
+def test_html_contains_protocol_id():
+    spec = ProgramSpec(protocol_id="P001")
+    html = render_html(spec)
+    assert "P001" in html
+
+
+def test_html_contains_key_sections():
+    packs = {
+        "index_date": _make_pack("index_date"),
+        "eligibility_inclusion": _make_pack("eligibility_inclusion",
+            concept_metadata={"per_candidate": {
+                "c0": {"domain": "demographic", "lookback_window": None, "operational_detail": None},
+            }}),
+    }
+    spec = build_program_spec(packs, protocol_id="P001")
     html = render_html(spec)
 
-    assert "TEST001" in html
-    assert "Test Protocol" in html
-    assert "DRAFT" in html
-    assert "Index Date" in html
+    assert "Study Design" in html
+    assert "Key Concepts" in html
     assert "Inclusion Criteria" in html
-    assert "first qualifying diagnosis" in html
-    assert "Age" in html and "18" in html
-    assert "retrospective cohort" in html
-    assert "Flatiron LBCL" in html
+    assert "Exclusion Criteria" in html
+    assert "Censoring Rules" in html
+    assert "Evidence text 0" in html
 
 
-def test_save_html_creates_file():
-    spec = ProgramSpec(protocol_id="TEST001")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = save_html(spec, f"{tmpdir}/test_spec.html")
-        assert Path(path).exists()
-        content = Path(path).read_text()
-        assert "TEST001" in content
+def test_html_qc_warnings():
+    spec = ProgramSpec(
+        protocol_id="P001",
+        qc_warnings=["Low signal for follow_up_end"],
+    )
+    html = render_html(spec)
+    assert "QC Warnings" in html
+    assert "Low signal" in html
 
 
-# ── Excel writer tests ───────────────────────────────────────────────────────
+def test_html_draft_mode_label():
+    spec = ProgramSpec(protocol_id="P001", generation_mode="draft")
+    html = render_html(spec)
+    assert "DRAFT" in html
 
-def test_save_excel_creates_file():
+
+# ── Excel writer tests ──────────────────────────────────────────────────────
+
+def test_excel_import():
+    """Just verify the excel_writer module can be imported."""
     try:
-        import openpyxl  # noqa: F401
-        from protocol_spec_assist.spec_output.excel_writer import save_excel
+        import openpyxl
     except ImportError:
-        import pytest
+        pytest.skip("openpyxl not installed")
+    from protocol_spec_assist.spec_output.excel_writer import save_excel
+    assert callable(save_excel)
+
+
+def test_excel_save(tmp_path):
+    """Test that save_excel creates a valid .xlsx file."""
+    try:
+        import openpyxl
+    except ImportError:
         pytest.skip("openpyxl not installed")
 
-    packs = _make_evidence_packs()
-    spec = build_program_spec("TEST001", packs)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = save_excel(spec, f"{tmpdir}/test_spec.xlsx")
-        assert Path(path).exists()
-        assert Path(path).stat().st_size > 0
+    from protocol_spec_assist.spec_output.excel_writer import save_excel
 
+    packs = {
+        "index_date": _make_pack("index_date"),
+        "eligibility_inclusion": _make_pack("eligibility_inclusion",
+            concept_metadata={"per_candidate": {
+                "c0": {"domain": "demographic", "lookback_window": None, "operational_detail": None},
+            }}),
+        "censoring_rules": _make_pack("censoring_rules",
+            concept_metadata={"per_candidate": {
+                "c0": {"rule_type": "event_based", "applies_to": "all"},
+            }}),
+    }
+    spec = build_program_spec(packs, protocol_id="P001")
 
-def test_excel_has_expected_tabs():
-    try:
-        from openpyxl import load_workbook
-        from protocol_spec_assist.spec_output.excel_writer import save_excel
-    except ImportError:
-        import pytest
-        pytest.skip("openpyxl not installed")
+    out_path = str(tmp_path / "test_spec.xlsx")
+    result = save_excel(spec, out_path)
+    assert result == out_path
 
-    packs = _make_evidence_packs()
-    spec = build_program_spec("TEST001", packs)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = save_excel(spec, f"{tmpdir}/test_spec.xlsx")
-        wb = load_workbook(path)
-        tabs = wb.sheetnames
-        assert "Overview" in tabs
-        assert "Inclusion Criteria" in tabs
-        assert "Exclusion Criteria" in tabs
-        assert "Endpoints" in tabs
-        assert "Censoring Rules" in tabs
-
-
-def test_excel_inclusion_criteria_populated():
-    try:
-        from openpyxl import load_workbook
-        from protocol_spec_assist.spec_output.excel_writer import save_excel
-    except ImportError:
-        import pytest
-        pytest.skip("openpyxl not installed")
-
-    packs = _make_evidence_packs()
-    spec = build_program_spec("TEST001", packs)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = save_excel(spec, f"{tmpdir}/test_spec.xlsx")
-        wb = load_workbook(path)
-        ws = wb["Inclusion Criteria"]
-        # Header row + 2 criteria rows
-        assert ws.cell(row=1, column=1).value == "ID"
-        assert ws.cell(row=2, column=1).value == "INC-01"
-        assert ws.cell(row=3, column=1).value == "INC-02"
+    wb = openpyxl.load_workbook(out_path)
+    assert "Overview" in wb.sheetnames
+    assert "Inclusion Criteria" in wb.sheetnames
+    assert "Censoring Rules" in wb.sheetnames

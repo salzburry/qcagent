@@ -208,18 +208,22 @@ def qc_quote_in_chunk(
     return results
 
 
-# Implemented concepts
+# All currently implemented concepts
 IMPLEMENTED_CONCEPTS = [
     "index_date", "follow_up_end", "primary_endpoint",
     "eligibility_inclusion", "eligibility_exclusion",
     "study_period", "censoring_rules",
 ]
 
+# Backward-compat alias
+PHASE1_CONCEPTS = IMPLEMENTED_CONCEPTS
+
 
 def run_all_qc(
     packs: dict[str, EvidencePack],
     expected_concepts: Optional[list[str]] = None,
     stage: str = "pre_review",
+    chunk_lookup: Optional[dict[str, str]] = None,
 ) -> list[QCResult]:
     """Run QC appropriate to the current stage."""
     results = []
@@ -227,6 +231,7 @@ def run_all_qc(
     if stage == "pre_review":
         results.extend(qc_pre_review(packs))
         results.extend(qc_cross_concept(packs, stage="pre_review"))
+        results.extend(qc_quote_in_chunk(packs, chunk_lookup))
     elif stage == "post_review":
         results.extend(qc_post_review(packs))
         results.extend(qc_cross_concept(packs, stage="post_review"))

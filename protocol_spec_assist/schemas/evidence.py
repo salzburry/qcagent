@@ -83,7 +83,7 @@ class EvidencePack(BaseModel):
     reviewer_override: Optional[str] = None  # free-text if no candidate is right
 
     # Run metadata
-    finder_version: str = "0.2.0"
+    finder_version: str = "0.3.0"
     model_used: str = ""
     prompt_version: str = ""
 

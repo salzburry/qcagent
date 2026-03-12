@@ -30,7 +30,7 @@ Step-by-step instructions to run the full pipeline end-to-end.
 
 - **Ollama** can serve Qwen3-8B quantized on CPU (slow but works). See Step 3b below.
 - **vLLM CPU mode**: `pip install vllm-cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple` — functional but substantially slower than GPU.
-- BGE-M3 and the reranker both run on CPU (slower, but functional). Set `use_fp16=False` in code if no GPU.
+- BGE-M3 and the reranker both run on CPU (slower, but functional). Set `RETRIEVAL_DEVICE=cpu` and `RETRIEVAL_FP16=false` env vars, or let auto-detection handle it.
 
 ---
 
@@ -95,17 +95,17 @@ To pre-download for offline use:
 
 ```bash
 # BGE-M3 embeddings (~2.3 GB)
-huggingface-cli download BAAI/bge-m3
+hf download BAAI/bge-m3
 
 # BGE reranker (~2.3 GB)
-huggingface-cli download BAAI/bge-reranker-v2-m3
+hf download BAAI/bge-reranker-v2-m3
 ```
 
 ### 2b. LLM model for vLLM
 
 ```bash
 # Default extractor model (~16 GB)
-huggingface-cli download Qwen/Qwen3-8B
+hf download Qwen/Qwen3-8B
 ```
 
 **Note on adjudicator:** For a first test run, skip the 30B adjudicator model entirely. Point both `DEFAULT_MODEL` and `ADJUDICATOR_MODEL` at `Qwen/Qwen3-8B`. The code now gracefully falls back to the first-pass result if the adjudicator is unavailable.
@@ -238,14 +238,20 @@ python -m protocol_spec_assist.workflows.protocol_run \
 Step 0: Model preflight      — verifies vLLM is reachable and model is loaded
 Step 1: Parse protocol        — Docling extracts sections, tables, pages (~30-120s)
 Step 2: Index protocol        — BGE-M3 embeds chunks, Qdrant indexes (~20-60s)
-Step 3: Find concepts         — 3 concept finders run sequentially:
-        ├── index_date        — hybrid retrieval → rerank → LLM extract
-        ├── follow_up_end     — same workflow, different queries/schema
-        └── primary_endpoint  — same workflow, different queries/schema
+Step 3: Find concepts         — 7 concept finders run sequentially:
+        ├── index_date            — hybrid retrieval → rerank → LLM extract
+        ├── follow_up_end         — same workflow, different queries/schema
+        ├── primary_endpoint      — same workflow, different queries/schema
+        ├── eligibility_inclusion — extracts all inclusion criteria
+        ├── eligibility_exclusion — extracts all exclusion criteria
+        ├── study_period          — extracts study dates, data source, design type
+        └── censoring_rules       — extracts all censoring rules
         Note: if confidence is low, each finder attempts an adjudicator pass.
         If the adjudicator is unavailable, the first-pass result is kept.
-Step 4: Pre-review QC         — deterministic rule checks
+        All finders share a single ProtocolIndex (no repeated model loading).
+Step 4: Pre-review QC         — deterministic rule checks + quote-in-chunk validation
 Step 5: Save evidence packs   — JSON output to data/outputs/
+Step 6: Generate draft spec   — ProgramSpec JSON + HTML preview + Excel workbook
 ```
 
 ### Expected output
@@ -257,9 +263,14 @@ Step 5: Save evidence packs   — JSON output to data/outputs/
 [IndexDateFinder] Done. 3 candidates | confidence=0.82 | contradictions=False
 [FollowUpEndFinder] Done. 2 candidates | confidence=0.75 | contradictions=False
 [PrimaryEndpointFinder] Done. 4 candidates | confidence=0.88 | contradictions=False
+[InclusionFinder] Done. 5 criteria | confidence=0.90
+[ExclusionFinder] Done. 3 criteria | confidence=0.85
+[StudyPeriodFinder] Done. 2 candidates | confidence=0.78 | data_source=...
+[CensoringRulesFinder] Done. 4 rules | confidence=0.80
 === QC Summary: 0 errors | 1 warnings | 0 info ===
 [!] [QC-002] (pre_review) follow_up_end: Low retrieval signal for follow_up_end.
 [Workflow] Evidence packs saved: data/outputs/NCT01013350_evidence_packs.json
+[Spec] Generated: spec_json, spec_html, spec_excel
 ```
 
 ---
@@ -272,10 +283,23 @@ python -m json.tool data/outputs/NCT01013350_evidence_packs.json | head -80
 
 # Or use jq if installed
 jq '.evidence_packs.index_date.candidates[0]' data/outputs/NCT01013350_evidence_packs.json
+
+# Open the HTML spec preview in a browser
+open data/outputs/NCT01013350_spec.html    # macOS
+xdg-open data/outputs/NCT01013350_spec.html  # Linux
+
+# View the draft spec JSON
+python -m json.tool data/outputs/NCT01013350_spec.json | head -60
 ```
 
-The output contains:
-- `evidence_packs`: one EvidencePack per concept, each with ranked candidates
+The pipeline produces 4 output files:
+- `*_evidence_packs.json`: raw evidence packs + QC results
+- `*_spec.json`: structured ProgramSpec (machine-readable)
+- `*_spec.html`: self-contained HTML preview with confidence badges
+- `*_spec.xlsx`: formatted Excel workbook (5 tabs, color-coded)
+
+The evidence packs contain:
+- `evidence_packs`: one EvidencePack per concept (7 concepts), each with ranked candidates
 - `qc_results`: list of QC findings (errors, warnings, info)
 
 Each candidate has:
@@ -324,6 +348,8 @@ export ADJUDICATOR_BASE_URL=http://localhost:8000/v1             # Adjudicator e
 export VLLM_API_KEY=local                                        # API key (default: "local")
 export DEFAULT_MODEL=Qwen/Qwen3-8B                              # Model name on vLLM
 export ADJUDICATOR_MODEL=Qwen/Qwen3-8B                          # Adjudicator model (same for first run)
+export RETRIEVAL_DEVICE=cpu                                      # Force CPU for embeddings/reranker (auto-detected by default)
+export RETRIEVAL_FP16=false                                      # Disable fp16 (required for CPU)
 ```
 
 For a dual-model production setup:

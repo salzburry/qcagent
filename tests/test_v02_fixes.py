@@ -256,7 +256,7 @@ def test_candidate_id_is_required():
         EvidenceCandidate(snippet="text")  # missing candidate_id
 
 
-def test_finder_version_is_0_2():
-    """Default finder_version should be 0.2.0."""
+def test_finder_version_is_0_3():
+    """Default finder_version should be 0.3.0."""
     pack = EvidencePack(protocol_id="P", concept="index_date")
-    assert pack.finder_version == "0.2.0"
+    assert pack.finder_version == "0.3.0"

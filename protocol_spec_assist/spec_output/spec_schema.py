@@ -1,231 +1,197 @@
 """
-Program spec schema — the structured output that maps to the Excel program spec.
-Built from evidence packs after extraction. This is the auto-translation layer.
+Program spec schema — the draft spec generated from evidence packs.
 
-Each section matches a tab or block in the typical RWE program spec Excel workbook.
+NOTE: This generates a DRAFT spec from the top-ranked candidate per concept.
+If a human has selected a candidate (selected_candidate_id is set), that
+candidate is used instead. The spec should always be reviewed before use.
 """
 
 from __future__ import annotations
 from typing import Optional
 from pydantic import BaseModel, Field
-from datetime import datetime
+
+from ..schemas.evidence import EvidencePack
 
 
-class SpecCriterion(BaseModel):
-    """One inclusion or exclusion criterion row."""
-    criterion_id: str
-    type: str                           # inclusion | exclusion
-    criterion_label: str                # short label
-    domain: str                         # demographic | clinical | treatment | enrollment | other
-    description: str                    # full quoted text from protocol
-    operational_definition: Optional[str] = None
+class SpecEntry(BaseModel):
+    """A single spec entry with value, provenance, and confidence."""
+    value: str = ""
+    source_snippet: str = ""
+    page: Optional[int] = None
+    confidence: Optional[float] = None
+    explicit: str = "explicit"
+    notes: str = ""
+
+
+class CriterionEntry(BaseModel):
+    """An inclusion or exclusion criterion."""
+    label: str = ""
+    value: str = ""
+    domain: str = "other"
     lookback_window: Optional[str] = None
+    operational_detail: Optional[str] = None
+    confidence: Optional[float] = None
+    explicit: str = "explicit"
     page: Optional[int] = None
-    section: Optional[str] = None
-    confidence: float = 0.0
-    explicit: str = "explicit"          # explicit | inferred | assumed
 
 
-class SpecEndpoint(BaseModel):
-    """One endpoint row."""
-    endpoint_id: str
-    type: str                           # primary | secondary
-    label: str
-    description: str
-    is_composite: bool = False
-    components: list[str] = Field(default_factory=list)
-    time_to_event: bool = False
+class CensoringRuleEntry(BaseModel):
+    """A censoring rule entry."""
+    label: str = ""
+    value: str = ""
+    rule_type: str = "event_based"
+    applies_to: Optional[str] = None
+    confidence: Optional[float] = None
+    explicit: str = "explicit"
     page: Optional[int] = None
-    section: Optional[str] = None
-    confidence: float = 0.0
 
 
-class SpecCensoringRule(BaseModel):
-    """One censoring rule row."""
-    rule_id: str
-    rule_label: str
-    rule_type: str                      # event_based | date_based | administrative | competing_risk
-    description: str
-    applies_to: Optional[str] = None    # which endpoint(s)
-    page: Optional[int] = None
-    section: Optional[str] = None
-    confidence: float = 0.0
+class StudyDesign(BaseModel):
+    design_type: SpecEntry = Field(default_factory=SpecEntry)
+    data_source: SpecEntry = Field(default_factory=SpecEntry)
+    study_period_start: SpecEntry = Field(default_factory=SpecEntry)
+    study_period_end: SpecEntry = Field(default_factory=SpecEntry)
 
 
 class ProgramSpec(BaseModel):
-    """
-    The complete auto-generated program spec.
-    One per protocol. Built from evidence packs.
-    """
-    # Header
-    protocol_id: str
-    protocol_title: Optional[str] = None
-    generated_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    generator_version: str = "0.3.0"
+    """Draft program spec generated from evidence packs."""
+    protocol_id: str = ""
+    spec_version: str = "0.3.0"
+    generation_mode: str = "draft"  # draft | reviewed
 
-    # Study Design
-    design_type: Optional[str] = None
-    study_period_start: Optional[str] = None
-    study_period_end: Optional[str] = None
-    data_source: Optional[str] = None
-    data_source_version: Optional[str] = None
+    study_design: StudyDesign = Field(default_factory=StudyDesign)
+    index_date: SpecEntry = Field(default_factory=SpecEntry)
+    follow_up_end: SpecEntry = Field(default_factory=SpecEntry)
+    primary_endpoint: SpecEntry = Field(default_factory=SpecEntry)
 
-    # Index Date
-    index_date_definition: Optional[str] = None
-    index_date_sponsor_term: Optional[str] = None
-    index_date_confidence: float = 0.0
-    index_date_page: Optional[int] = None
+    inclusion_criteria: list[CriterionEntry] = Field(default_factory=list)
+    exclusion_criteria: list[CriterionEntry] = Field(default_factory=list)
+    censoring_rules: list[CensoringRuleEntry] = Field(default_factory=list)
 
-    # Follow-up
-    follow_up_end_definition: Optional[str] = None
-    follow_up_end_confidence: float = 0.0
+    qc_warnings: list[str] = Field(default_factory=list)
 
-    # Eligibility
-    inclusion_criteria: list[SpecCriterion] = Field(default_factory=list)
-    exclusion_criteria: list[SpecCriterion] = Field(default_factory=list)
 
-    # Endpoints
-    endpoints: list[SpecEndpoint] = Field(default_factory=list)
+def _get_governing_candidate(pack: EvidencePack):
+    """Get the governing candidate: selected by reviewer, or top-ranked if draft."""
+    if pack.selected_candidate is not None:
+        return pack.selected_candidate
+    # Draft mode: use top candidate (first in list = highest ranked by finder)
+    if pack.candidates:
+        return pack.candidates[0]
+    return None
 
-    # Censoring
-    censoring_rules: list[SpecCensoringRule] = Field(default_factory=list)
 
-    # QC metadata
-    concepts_extracted: list[str] = Field(default_factory=list)
-    concepts_with_low_signal: list[str] = Field(default_factory=list)
-    concepts_with_contradictions: list[str] = Field(default_factory=list)
+def _make_entry(pack: EvidencePack) -> SpecEntry:
+    """Build a SpecEntry from a pack's governing candidate."""
+    candidate = _get_governing_candidate(pack)
+    if candidate is None:
+        return SpecEntry(notes="No candidates found")
+
+    return SpecEntry(
+        value=candidate.snippet,
+        source_snippet=candidate.snippet,
+        page=candidate.page,
+        confidence=candidate.llm_confidence,
+        explicit=candidate.explicit,
+        notes=f"sponsor_term: {candidate.sponsor_term or 'n/a'}",
+    )
 
 
 def build_program_spec(
-    protocol_id: str,
-    evidence_packs: dict[str, dict],
-    protocol_title: Optional[str] = None,
+    packs: dict[str, EvidencePack],
+    protocol_id: str = "",
+    qc_warnings: Optional[list[str]] = None,
 ) -> ProgramSpec:
     """
-    Build a ProgramSpec from evidence packs.
-    This is the auto-translation: evidence packs → structured spec.
+    Translate evidence packs → draft ProgramSpec.
+
+    Uses selected_candidate_id if a human has reviewed, otherwise uses
+    the top-ranked candidate (draft mode).
     """
     spec = ProgramSpec(
         protocol_id=protocol_id,
-        protocol_title=protocol_title,
+        qc_warnings=qc_warnings or [],
     )
 
-    for concept, pack_data in evidence_packs.items():
-        spec.concepts_extracted.append(concept)
+    # Determine generation mode
+    any_reviewed = any(p.selected_candidate_id is not None for p in packs.values())
+    spec.generation_mode = "reviewed" if any_reviewed else "draft"
 
-        if pack_data.get("low_retrieval_signal"):
-            spec.concepts_with_low_signal.append(concept)
-        if pack_data.get("contradictions_found"):
-            spec.concepts_with_contradictions.append(concept)
+    # Single-value concepts
+    if "index_date" in packs:
+        spec.index_date = _make_entry(packs["index_date"])
+    if "follow_up_end" in packs:
+        spec.follow_up_end = _make_entry(packs["follow_up_end"])
+    if "primary_endpoint" in packs:
+        spec.primary_endpoint = _make_entry(packs["primary_endpoint"])
 
-    # ── Index Date ────────────────────────────────────────────────────────
-    if "index_date" in evidence_packs:
-        pack = evidence_packs["index_date"]
-        candidates = pack.get("candidates", [])
-        if candidates:
-            top = candidates[0]
-            spec.index_date_definition = top.get("snippet", "")
-            spec.index_date_sponsor_term = top.get("sponsor_term")
-            spec.index_date_confidence = top.get("llm_confidence", 0.0) or 0.0
-            spec.index_date_page = top.get("page")
+    # Study design from study_period pack
+    if "study_period" in packs:
+        sp = packs["study_period"]
+        meta = sp.concept_metadata or {}
 
-    # ── Follow-up End ─────────────────────────────────────────────────────
-    if "follow_up_end" in evidence_packs:
-        pack = evidence_packs["follow_up_end"]
-        candidates = pack.get("candidates", [])
-        if candidates:
-            top = candidates[0]
-            spec.follow_up_end_definition = top.get("snippet", "")
-            spec.follow_up_end_confidence = top.get("llm_confidence", 0.0) or 0.0
+        spec.study_design.study_period_start = SpecEntry(
+            value=meta.get("study_period_start") or "",
+        )
+        spec.study_design.study_period_end = SpecEntry(
+            value=meta.get("study_period_end") or "",
+        )
+        spec.study_design.data_source = SpecEntry(
+            value=meta.get("data_source") or "",
+            notes=f"version: {meta.get('data_source_version') or 'n/a'}",
+        )
+        spec.study_design.design_type = SpecEntry(
+            value=meta.get("design_type") or "",
+        )
 
-    # ── Study Period / Data Source ────────────────────────────────────────
-    if "study_period" in evidence_packs:
-        pack = evidence_packs["study_period"]
-        meta = pack.get("concept_metadata") or {}
-        spec.study_period_start = meta.get("study_period_start")
-        spec.study_period_end = meta.get("study_period_end")
-        spec.data_source = meta.get("data_source")
-        spec.data_source_version = meta.get("data_source_version")
-        spec.design_type = meta.get("design_type")
-
-    # ── Inclusion Criteria ────────────────────────────────────────────────
-    if "eligibility_inclusion" in evidence_packs:
-        pack = evidence_packs["eligibility_inclusion"]
-        per_candidate = (pack.get("concept_metadata") or {}).get("per_candidate", {})
-        for i, c in enumerate(pack.get("candidates", []), 1):
-            cid = c.get("candidate_id", f"inc_{i}")
-            meta = per_candidate.get(cid, {})
-            spec.inclusion_criteria.append(SpecCriterion(
-                criterion_id=f"INC-{i:02d}",
-                type="inclusion",
-                criterion_label=meta.get("criterion_label", c.get("sponsor_term", "")),
-                domain=meta.get("domain", "other"),
-                description=c.get("snippet", ""),
-                operational_definition=meta.get("operational_detail"),
-                lookback_window=meta.get("lookback_window"),
-                page=c.get("page"),
-                section=c.get("section_title"),
-                confidence=c.get("llm_confidence", 0.0) or 0.0,
-                explicit=c.get("explicit", "explicit"),
+    # Multi-value concepts: inclusion criteria
+    if "eligibility_inclusion" in packs:
+        inc_pack = packs["eligibility_inclusion"]
+        meta = (inc_pack.concept_metadata or {}).get("per_candidate", {})
+        for cand in inc_pack.candidates:
+            cm = meta.get(cand.candidate_id, {})
+            spec.inclusion_criteria.append(CriterionEntry(
+                label=cand.sponsor_term or "",
+                value=cand.snippet,
+                domain=cm.get("domain", "other"),
+                lookback_window=cm.get("lookback_window"),
+                operational_detail=cm.get("operational_detail"),
+                confidence=cand.llm_confidence,
+                explicit=cand.explicit,
+                page=cand.page,
             ))
 
-    # ── Exclusion Criteria ────────────────────────────────────────────────
-    if "eligibility_exclusion" in evidence_packs:
-        pack = evidence_packs["eligibility_exclusion"]
-        per_candidate = (pack.get("concept_metadata") or {}).get("per_candidate", {})
-        for i, c in enumerate(pack.get("candidates", []), 1):
-            cid = c.get("candidate_id", f"exc_{i}")
-            meta = per_candidate.get(cid, {})
-            spec.exclusion_criteria.append(SpecCriterion(
-                criterion_id=f"EXC-{i:02d}",
-                type="exclusion",
-                criterion_label=meta.get("criterion_label", c.get("sponsor_term", "")),
-                domain=meta.get("domain", "other"),
-                description=c.get("snippet", ""),
-                operational_definition=meta.get("operational_detail"),
-                lookback_window=meta.get("lookback_window"),
-                page=c.get("page"),
-                section=c.get("section_title"),
-                confidence=c.get("llm_confidence", 0.0) or 0.0,
-                explicit=c.get("explicit", "explicit"),
+    # Multi-value concepts: exclusion criteria
+    if "eligibility_exclusion" in packs:
+        exc_pack = packs["eligibility_exclusion"]
+        meta = (exc_pack.concept_metadata or {}).get("per_candidate", {})
+        for cand in exc_pack.candidates:
+            cm = meta.get(cand.candidate_id, {})
+            spec.exclusion_criteria.append(CriterionEntry(
+                label=cand.sponsor_term or "",
+                value=cand.snippet,
+                domain=cm.get("domain", "other"),
+                lookback_window=cm.get("lookback_window"),
+                operational_detail=cm.get("operational_detail"),
+                confidence=cand.llm_confidence,
+                explicit=cand.explicit,
+                page=cand.page,
             ))
 
-    # ── Primary Endpoint ──────────────────────────────────────────────────
-    if "primary_endpoint" in evidence_packs:
-        pack = evidence_packs["primary_endpoint"]
-        per_candidate = (pack.get("concept_metadata") or {}).get("per_candidate", {})
-        for i, c in enumerate(pack.get("candidates", []), 1):
-            cid = c.get("candidate_id", f"ep_{i}")
-            meta = per_candidate.get(cid, {})
-            spec.endpoints.append(SpecEndpoint(
-                endpoint_id=f"EP-{i:02d}",
-                type="primary",
-                label=c.get("sponsor_term", ""),
-                description=c.get("snippet", ""),
-                is_composite=meta.get("is_composite", False),
-                components=meta.get("components", []),
-                time_to_event=meta.get("time_to_event", False),
-                page=c.get("page"),
-                section=c.get("section_title"),
-                confidence=c.get("llm_confidence", 0.0) or 0.0,
-            ))
-
-    # ── Censoring Rules ───────────────────────────────────────────────────
-    if "censoring_rules" in evidence_packs:
-        pack = evidence_packs["censoring_rules"]
-        per_candidate = (pack.get("concept_metadata") or {}).get("per_candidate", {})
-        for i, c in enumerate(pack.get("candidates", []), 1):
-            cid = c.get("candidate_id", f"cr_{i}")
-            meta = per_candidate.get(cid, {})
-            spec.censoring_rules.append(SpecCensoringRule(
-                rule_id=f"CR-{i:02d}",
-                rule_label=meta.get("rule_label", c.get("sponsor_term", "")),
-                rule_type=meta.get("rule_type", ""),
-                description=c.get("snippet", ""),
-                applies_to=meta.get("applies_to"),
-                page=c.get("page"),
-                section=c.get("section_title"),
-                confidence=c.get("llm_confidence", 0.0) or 0.0,
+    # Multi-value concepts: censoring rules
+    if "censoring_rules" in packs:
+        cr_pack = packs["censoring_rules"]
+        meta = (cr_pack.concept_metadata or {}).get("per_candidate", {})
+        for cand in cr_pack.candidates:
+            cm = meta.get(cand.candidate_id, {})
+            spec.censoring_rules.append(CensoringRuleEntry(
+                label=cand.sponsor_term or "",
+                value=cand.snippet,
+                rule_type=cm.get("rule_type", "event_based"),
+                applies_to=cm.get("applies_to"),
+                confidence=cand.llm_confidence,
+                explicit=cand.explicit,
+                page=cand.page,
             ))
 
     return spec

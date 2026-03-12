@@ -13,8 +13,8 @@ from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
 
-FINDER_VERSION = "0.2.0"
-PROMPT_VERSION = "0.2.0"
+FINDER_VERSION = "0.3.0"
+PROMPT_VERSION = "0.3.0"
 CONFIDENCE_THRESHOLD = 0.65
 
 

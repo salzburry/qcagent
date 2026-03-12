@@ -1,242 +1,189 @@
 """
-HTML preview renderer — Navidence-style clean output.
-Generates a single self-contained HTML file from a ProgramSpec.
-Reviewable in any browser. No dependencies beyond stdlib.
+HTML renderer — self-contained HTML preview of draft program spec.
+No external CSS/JS dependencies.
 """
 
 from __future__ import annotations
 from pathlib import Path
+
 from .spec_schema import ProgramSpec
 
 
-def _confidence_badge(conf: float) -> str:
+def _confidence_badge(conf: float | None) -> str:
+    if conf is None:
+        return '<span class="badge badge-grey">N/A</span>'
     if conf >= 0.8:
-        color, label = "#22c55e", "High"
-    elif conf >= 0.6:
-        color, label = "#f59e0b", "Medium"
-    else:
-        color, label = "#ef4444", "Low"
-    return f'<span style="background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:0.8em;">{label} ({conf:.0%})</span>'
+        return f'<span class="badge badge-green">{conf:.0%}</span>'
+    if conf >= 0.6:
+        return f'<span class="badge badge-yellow">{conf:.0%}</span>'
+    return f'<span class="badge badge-red">{conf:.0%}</span>'
 
 
 def _explicit_badge(explicit: str) -> str:
-    colors = {
-        "explicit": "#3b82f6",
-        "inferred": "#f59e0b",
-        "assumed": "#ef4444",
-        "ambiguous": "#ef4444",
-        "not_found": "#6b7280",
-    }
-    color = colors.get(explicit, "#6b7280")
-    return f'<span style="background:{color};color:white;padding:2px 6px;border-radius:4px;font-size:0.75em;">{explicit}</span>'
+    if explicit == "explicit":
+        return '<span class="badge badge-green">explicit</span>'
+    if explicit == "inferred":
+        return '<span class="badge badge-yellow">inferred</span>'
+    return f'<span class="badge badge-grey">{explicit}</span>'
 
 
-def _page_ref(page) -> str:
-    if page is not None:
-        return f'<span style="color:#6b7280;font-size:0.85em;">p.{page}</span>'
-    return ""
+def _page_ref(page: int | None) -> str:
+    if page is None:
+        return ""
+    return f' <span class="page-ref">p.{page}</span>'
 
 
 def render_html(spec: ProgramSpec) -> str:
-    """Render a ProgramSpec as a self-contained HTML document."""
+    """Generate self-contained HTML preview of draft program spec."""
 
-    # ── QC summary bar ────────────────────────────────────────────────
-    qc_items = []
-    if spec.concepts_with_low_signal:
-        qc_items.append(f'<span style="color:#f59e0b;">Low signal: {", ".join(spec.concepts_with_low_signal)}</span>')
-    if spec.concepts_with_contradictions:
-        qc_items.append(f'<span style="color:#ef4444;">Contradictions: {", ".join(spec.concepts_with_contradictions)}</span>')
-    if not qc_items:
-        qc_items.append('<span style="color:#22c55e;">No QC flags</span>')
-    qc_bar = " | ".join(qc_items)
+    # QC warning bar
+    qc_html = ""
+    if spec.qc_warnings:
+        items = "".join(f"<li>{w}</li>" for w in spec.qc_warnings)
+        qc_html = f'<div class="qc-bar"><strong>QC Warnings:</strong><ul>{items}</ul></div>'
 
-    # ── Study design section ──────────────────────────────────────────
-    design_rows = []
-    if spec.design_type:
-        design_rows.append(f"<tr><td><strong>Study Design</strong></td><td>{_esc(spec.design_type)}</td></tr>")
-    if spec.study_period_start or spec.study_period_end:
-        period = f"{_esc(spec.study_period_start or '?')} to {_esc(spec.study_period_end or '?')}"
-        design_rows.append(f"<tr><td><strong>Study Period</strong></td><td>{period}</td></tr>")
-    if spec.data_source:
-        ds = _esc(spec.data_source)
-        if spec.data_source_version:
-            ds += f" ({_esc(spec.data_source_version)})"
-        design_rows.append(f"<tr><td><strong>Data Source</strong></td><td>{ds}</td></tr>")
-    design_html = _table_wrap(design_rows) if design_rows else '<p style="color:#6b7280;">Not extracted</p>'
+    mode_label = "DRAFT" if spec.generation_mode == "draft" else "REVIEWED"
+    mode_class = "mode-draft" if spec.generation_mode == "draft" else "mode-reviewed"
 
-    # ── Index date section ────────────────────────────────────────────
-    if spec.index_date_definition:
-        idx_html = f"""
-        <blockquote style="border-left:3px solid #3b82f6;padding-left:12px;margin:8px 0;">
-            {_esc(spec.index_date_definition)}
-        </blockquote>
-        <p>{_confidence_badge(spec.index_date_confidence)}
-        {_page_ref(spec.index_date_page)}
-        {f' | Sponsor term: <em>{_esc(spec.index_date_sponsor_term)}</em>' if spec.index_date_sponsor_term else ''}
-        </p>"""
-    else:
-        idx_html = '<p style="color:#6b7280;">Not extracted</p>'
+    # Study design section
+    sd = spec.study_design
+    study_design_rows = ""
+    for label, entry in [
+        ("Design Type", sd.design_type),
+        ("Data Source", sd.data_source),
+        ("Study Period Start", sd.study_period_start),
+        ("Study Period End", sd.study_period_end),
+    ]:
+        if entry.value:
+            study_design_rows += (
+                f"<tr><td>{label}</td><td>{entry.value}</td>"
+                f"<td>{entry.notes or ''}</td></tr>\n"
+            )
 
-    # ── Follow-up end section ─────────────────────────────────────────
-    if spec.follow_up_end_definition:
-        fue_html = f"""
-        <blockquote style="border-left:3px solid #3b82f6;padding-left:12px;margin:8px 0;">
-            {_esc(spec.follow_up_end_definition)}
-        </blockquote>
-        <p>{_confidence_badge(spec.follow_up_end_confidence)}</p>"""
-    else:
-        fue_html = '<p style="color:#6b7280;">Not extracted</p>'
+    # Single-value concepts
+    single_concepts = ""
+    for label, entry in [
+        ("Index Date", spec.index_date),
+        ("Follow-up End", spec.follow_up_end),
+        ("Primary Endpoint", spec.primary_endpoint),
+    ]:
+        if entry.value:
+            single_concepts += (
+                f"<tr><td>{label}</td>"
+                f"<td>{entry.value}</td>"
+                f"<td>{_confidence_badge(entry.confidence)} "
+                f"{_explicit_badge(entry.explicit)}"
+                f"{_page_ref(entry.page)}</td></tr>\n"
+            )
 
-    # ── Inclusion criteria section ────────────────────────────────────
-    inc_rows = []
+    # Inclusion criteria
+    inc_rows = ""
     for c in spec.inclusion_criteria:
-        op_def = f"<br><em style='color:#6b7280;font-size:0.9em;'>{_esc(c.operational_definition)}</em>" if c.operational_definition else ""
-        lookback = f"<br><span style='color:#6b7280;font-size:0.85em;'>Lookback: {_esc(c.lookback_window)}</span>" if c.lookback_window else ""
-        inc_rows.append(f"""<tr>
-            <td><strong>{_esc(c.criterion_id)}</strong></td>
-            <td><span style="background:#e0e7ff;padding:2px 6px;border-radius:3px;font-size:0.8em;">{_esc(c.domain)}</span></td>
-            <td>{_esc(c.criterion_label)}</td>
-            <td>{_esc(c.description)}{op_def}{lookback}</td>
-            <td>{_confidence_badge(c.confidence)} {_explicit_badge(c.explicit)} {_page_ref(c.page)}</td>
-        </tr>""")
-    inc_html = _table_wrap(inc_rows, headers=["ID", "Domain", "Label", "Description", "Confidence"]) if inc_rows else '<p style="color:#6b7280;">Not extracted</p>'
+        inc_rows += (
+            f"<tr><td>{c.label}</td>"
+            f"<td>{c.value}</td>"
+            f"<td>{c.domain}</td>"
+            f"<td>{c.lookback_window or ''}</td>"
+            f"<td>{_confidence_badge(c.confidence)} "
+            f"{_explicit_badge(c.explicit)}"
+            f"{_page_ref(c.page)}</td></tr>\n"
+        )
 
-    # ── Exclusion criteria section ────────────────────────────────────
-    exc_rows = []
+    # Exclusion criteria
+    exc_rows = ""
     for c in spec.exclusion_criteria:
-        op_def = f"<br><em style='color:#6b7280;font-size:0.9em;'>{_esc(c.operational_definition)}</em>" if c.operational_definition else ""
-        lookback = f"<br><span style='color:#6b7280;font-size:0.85em;'>Lookback: {_esc(c.lookback_window)}</span>" if c.lookback_window else ""
-        exc_rows.append(f"""<tr>
-            <td><strong>{_esc(c.criterion_id)}</strong></td>
-            <td><span style="background:#fce7f3;padding:2px 6px;border-radius:3px;font-size:0.8em;">{_esc(c.domain)}</span></td>
-            <td>{_esc(c.criterion_label)}</td>
-            <td>{_esc(c.description)}{op_def}{lookback}</td>
-            <td>{_confidence_badge(c.confidence)} {_explicit_badge(c.explicit)} {_page_ref(c.page)}</td>
-        </tr>""")
-    exc_html = _table_wrap(exc_rows, headers=["ID", "Domain", "Label", "Description", "Confidence"]) if exc_rows else '<p style="color:#6b7280;">Not extracted</p>'
+        exc_rows += (
+            f"<tr><td>{c.label}</td>"
+            f"<td>{c.value}</td>"
+            f"<td>{c.domain}</td>"
+            f"<td>{c.lookback_window or ''}</td>"
+            f"<td>{_confidence_badge(c.confidence)} "
+            f"{_explicit_badge(c.explicit)}"
+            f"{_page_ref(c.page)}</td></tr>\n"
+        )
 
-    # ── Endpoints section ─────────────────────────────────────────────
-    ep_rows = []
-    for ep in spec.endpoints:
-        components = ""
-        if ep.is_composite and ep.components:
-            items = "".join(f"<li>{_esc(c)}</li>" for c in ep.components)
-            components = f"<br><em>Components:</em><ul style='margin:4px 0;'>{items}</ul>"
-        tte = " | Time-to-event" if ep.time_to_event else ""
-        ep_rows.append(f"""<tr>
-            <td><strong>{_esc(ep.endpoint_id)}</strong></td>
-            <td>{_esc(ep.type)}</td>
-            <td>{_esc(ep.label)}</td>
-            <td>{_esc(ep.description)}{components}</td>
-            <td>{_confidence_badge(ep.confidence)}{tte} {_page_ref(ep.page)}</td>
-        </tr>""")
-    ep_html = _table_wrap(ep_rows, headers=["ID", "Type", "Label", "Description", "Confidence"]) if ep_rows else '<p style="color:#6b7280;">Not extracted</p>'
+    # Censoring rules
+    cens_rows = ""
+    for r in spec.censoring_rules:
+        cens_rows += (
+            f"<tr><td>{r.label}</td>"
+            f"<td>{r.value}</td>"
+            f"<td>{r.rule_type}</td>"
+            f"<td>{r.applies_to or 'all'}</td>"
+            f"<td>{_confidence_badge(r.confidence)} "
+            f"{_explicit_badge(r.explicit)}"
+            f"{_page_ref(r.page)}</td></tr>\n"
+        )
 
-    # ── Censoring rules section ───────────────────────────────────────
-    cr_rows = []
-    for cr in spec.censoring_rules:
-        applies = f"<br><span style='color:#6b7280;font-size:0.85em;'>Applies to: {_esc(cr.applies_to)}</span>" if cr.applies_to else ""
-        cr_rows.append(f"""<tr>
-            <td><strong>{_esc(cr.rule_id)}</strong></td>
-            <td><span style="background:#fef3c7;padding:2px 6px;border-radius:3px;font-size:0.8em;">{_esc(cr.rule_type)}</span></td>
-            <td>{_esc(cr.rule_label)}</td>
-            <td>{_esc(cr.description)}{applies}</td>
-            <td>{_confidence_badge(cr.confidence)} {_page_ref(cr.page)}</td>
-        </tr>""")
-    cr_html = _table_wrap(cr_rows, headers=["ID", "Type", "Label", "Description", "Confidence"]) if cr_rows else '<p style="color:#6b7280;">Not extracted</p>'
-
-    # ── Assemble full HTML ────────────────────────────────────────────
-    html = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Program Spec — {_esc(spec.protocol_id)}</title>
+<meta charset="utf-8">
+<title>Program Spec — {spec.protocol_id}</title>
 <style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1100px; margin: 0 auto; padding: 20px; color: #1f2937; line-height: 1.5; }}
-  h1 {{ border-bottom: 2px solid #3b82f6; padding-bottom: 8px; }}
-  h2 {{ color: #1e40af; margin-top: 32px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 8px 0; }}
-  th {{ background: #f3f4f6; text-align: left; padding: 8px 12px; font-size: 0.85em; border-bottom: 2px solid #d1d5db; }}
-  td {{ padding: 8px 12px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }}
-  tr:hover {{ background: #f9fafb; }}
-  blockquote {{ background: #f0f7ff; margin: 8px 0; padding: 8px 12px; border-radius: 4px; }}
-  .header-meta {{ color: #6b7280; font-size: 0.9em; margin-bottom: 16px; }}
-  .qc-bar {{ background: #f9fafb; border: 1px solid #e5e7eb; padding: 8px 16px; border-radius: 6px; margin: 12px 0; }}
-  .draft-badge {{ background: #fbbf24; color: #1f2937; padding: 4px 12px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1100px; margin: 0 auto; padding: 20px; color: #333; }}
+h1 {{ border-bottom: 2px solid #2563eb; padding-bottom: 8px; }}
+h2 {{ color: #1e40af; margin-top: 32px; }}
+table {{ border-collapse: collapse; width: 100%; margin: 12px 0; }}
+th, td {{ border: 1px solid #d1d5db; padding: 8px 12px; text-align: left; vertical-align: top; }}
+th {{ background: #f3f4f6; font-weight: 600; }}
+.badge {{ padding: 2px 8px; border-radius: 4px; font-size: 0.85em; font-weight: 500; }}
+.badge-green {{ background: #dcfce7; color: #166534; }}
+.badge-yellow {{ background: #fef9c3; color: #854d0e; }}
+.badge-red {{ background: #fee2e2; color: #991b1b; }}
+.badge-grey {{ background: #f3f4f6; color: #6b7280; }}
+.page-ref {{ color: #6b7280; font-size: 0.85em; }}
+.qc-bar {{ background: #fef3c7; border: 1px solid #f59e0b; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }}
+.qc-bar ul {{ margin: 4px 0 0 0; padding-left: 20px; }}
+.mode-draft {{ background: #fef9c3; color: #854d0e; padding: 4px 12px; border-radius: 4px; font-weight: 600; }}
+.mode-reviewed {{ background: #dcfce7; color: #166534; padding: 4px 12px; border-radius: 4px; font-weight: 600; }}
 </style>
 </head>
 <body>
-
-<h1>Program Spec <span class="draft-badge">DRAFT — AUTO-GENERATED</span></h1>
-<div class="header-meta">
-    <strong>Protocol:</strong> {_esc(spec.protocol_id)}
-    {f' | <strong>Title:</strong> {_esc(spec.protocol_title)}' if spec.protocol_title else ''}
-    <br>
-    <strong>Generated:</strong> {spec.generated_at}
-    | <strong>Concepts extracted:</strong> {len(spec.concepts_extracted)}
-</div>
-
-<div class="qc-bar">{qc_bar}</div>
+<h1>Program Spec — {spec.protocol_id} <span class="{mode_class}">{mode_label}</span></h1>
+{qc_html}
 
 <h2>Study Design</h2>
-{design_html}
+<table>
+<tr><th>Field</th><th>Value</th><th>Notes</th></tr>
+{study_design_rows if study_design_rows else '<tr><td colspan="3">No study design information extracted.</td></tr>'}
+</table>
 
-<h2>Index Date</h2>
-{idx_html}
+<h2>Key Concepts</h2>
+<table>
+<tr><th>Concept</th><th>Evidence</th><th>Quality</th></tr>
+{single_concepts if single_concepts else '<tr><td colspan="3">No key concepts extracted.</td></tr>'}
+</table>
 
-<h2>Follow-up End</h2>
-{fue_html}
+<h2>Inclusion Criteria</h2>
+<table>
+<tr><th>Criterion</th><th>Evidence</th><th>Domain</th><th>Lookback</th><th>Quality</th></tr>
+{inc_rows if inc_rows else '<tr><td colspan="5">No inclusion criteria extracted.</td></tr>'}
+</table>
 
-<h2>Inclusion Criteria ({len(spec.inclusion_criteria)})</h2>
-{inc_html}
+<h2>Exclusion Criteria</h2>
+<table>
+<tr><th>Criterion</th><th>Evidence</th><th>Domain</th><th>Lookback</th><th>Quality</th></tr>
+{exc_rows if exc_rows else '<tr><td colspan="5">No exclusion criteria extracted.</td></tr>'}
+</table>
 
-<h2>Exclusion Criteria ({len(spec.exclusion_criteria)})</h2>
-{exc_html}
+<h2>Censoring Rules</h2>
+<table>
+<tr><th>Rule</th><th>Evidence</th><th>Type</th><th>Applies To</th><th>Quality</th></tr>
+{cens_rows if cens_rows else '<tr><td colspan="5">No censoring rules extracted.</td></tr>'}
+</table>
 
-<h2>Endpoints ({len(spec.endpoints)})</h2>
-{ep_html}
-
-<h2>Censoring Rules ({len(spec.censoring_rules)})</h2>
-{cr_html}
-
-<hr style="margin-top:40px;">
-<p style="color:#9ca3af;font-size:0.8em;">
-    Auto-generated by Protocol Spec Assist v{spec.generator_version}.
-    This is a draft for review — not a validated specification.
-    All extracted content requires human verification before use.
-</p>
-
+<footer style="margin-top: 40px; color: #9ca3af; font-size: 0.85em;">
+Generated by Protocol Spec Assist v{spec.spec_version} | Mode: {mode_label}
+</footer>
 </body>
 </html>"""
 
-    return html
-
 
 def save_html(spec: ProgramSpec, output_path: str) -> str:
-    """Render and save HTML to file. Returns the output path."""
+    """Render and save HTML to file."""
     html = render_html(spec)
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8")
-    print(f"[HTML] Spec preview saved: {path}")
     return str(path)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _esc(text) -> str:
-    """HTML-escape a string."""
-    if text is None:
-        return ""
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-
-def _table_wrap(rows: list[str], headers: list[str] | None = None) -> str:
-    """Wrap row HTML in a table element."""
-    header_html = ""
-    if headers:
-        ths = "".join(f"<th>{h}</th>" for h in headers)
-        header_html = f"<thead><tr>{ths}</tr></thead>"
-    body = "".join(rows)
-    return f"<table>{header_html}<tbody>{body}</tbody></table>"

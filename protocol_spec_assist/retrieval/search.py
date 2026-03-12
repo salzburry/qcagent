@@ -30,6 +30,31 @@ class RetrievedChunk:
         return self.rerank_score if self.rerank_score is not None else self.retrieval_score
 
 
+def _detect_device_and_fp16() -> tuple[str, bool]:
+    """Detect whether CUDA is available and set fp16 accordingly.
+    Respects RETRIEVAL_DEVICE and RETRIEVAL_FP16 env vars if set."""
+    import os
+
+    device_override = os.environ.get("RETRIEVAL_DEVICE", "").lower()
+    fp16_override = os.environ.get("RETRIEVAL_FP16", "").lower()
+
+    if device_override:
+        device = device_override
+    else:
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
+
+    if fp16_override:
+        use_fp16 = fp16_override in ("true", "1", "yes")
+    else:
+        use_fp16 = device != "cpu"
+
+    return device, use_fp16
+
+
 class EmbeddingModel:
     """BGE-M3: dense + sparse embeddings."""
 
@@ -40,8 +65,9 @@ class EmbeddingModel:
         if self._model is None:
             try:
                 from FlagEmbedding import BGEM3FlagModel
-                self._model = BGEM3FlagModel(DENSE_MODEL, use_fp16=True)
-                print(f"[Embeddings] Loaded {DENSE_MODEL}")
+                _device, use_fp16 = _detect_device_and_fp16()
+                self._model = BGEM3FlagModel(DENSE_MODEL, use_fp16=use_fp16)
+                print(f"[Embeddings] Loaded {DENSE_MODEL} (fp16={use_fp16})")
             except ImportError:
                 raise ImportError(
                     "FlagEmbedding not installed.\n"
@@ -73,8 +99,9 @@ class Reranker:
         if self._model is None:
             try:
                 from FlagEmbedding import FlagReranker
-                self._model = FlagReranker(RERANKER_MODEL, use_fp16=True)
-                print(f"[Reranker] Loaded {RERANKER_MODEL}")
+                _device, use_fp16 = _detect_device_and_fp16()
+                self._model = FlagReranker(RERANKER_MODEL, use_fp16=use_fp16)
+                print(f"[Reranker] Loaded {RERANKER_MODEL} (fp16={use_fp16})")
             except ImportError:
                 raise ImportError(
                     "FlagEmbedding not installed.\n"
