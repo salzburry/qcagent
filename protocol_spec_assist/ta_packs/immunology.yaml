@@ -1,0 +1,195 @@
+# Immunology TA Pack
+# Covers lupus (SLE), rheumatoid arthritis, psoriasis, atopic dermatitis,
+# inflammatory bowel disease, and other immune-mediated conditions
+
+concept_synonyms:
+  index_date:
+    - "cohort entry"
+    - "first qualifying diagnosis"
+    - "initiation of biologic"
+    - "first prescription"
+    - "treatment initiation"
+    - "switch date"
+
+  follow_up_end:
+    - "end of follow-up"
+    - "data cutoff"
+    - "death"
+    - "disenrollment"
+    - "end of study"
+    - "treatment discontinuation"
+
+  primary_endpoint:
+    - "disease flare"
+    - "relapse"
+    - "remission"
+    - "treatment response"
+    - "disease activity score"
+    - "DAS28"
+    - "PASI"
+    - "EASI"
+    - "SLEDAI"
+    - "ACR response"
+    - "time to flare"
+    - "steroid-free remission"
+
+  eligibility_inclusion:
+    - "inclusion criteria"
+    - "qualifying diagnosis"
+    - "confirmed diagnosis"
+    - "biologic-naive"
+    - "biologic-experienced"
+    - "inadequate response"
+
+  demographics:
+    - "age"
+    - "sex"
+    - "race"
+    - "ethnicity"
+    - "BMI"
+    - "smoking status"
+    - "geographic region"
+
+  clinical_characteristics:
+    - "disease duration"
+    - "disease activity"
+    - "DAS28"
+    - "DAS28-CRP"
+    - "DAS28-ESR"
+    - "CDAI"
+    - "SDAI"
+    - "HAQ-DI"
+    - "PASI"
+    - "EASI"
+    - "IGA"
+    - "BSA"
+    - "SLEDAI"
+    - "joint count"
+    - "tender joint count"
+    - "swollen joint count"
+    - "CCI"
+    - "Charlson comorbidity"
+    - "prior biologic"
+    - "number of prior biologics"
+
+  biomarkers:
+    - "RF"
+    - "rheumatoid factor"
+    - "anti-CCP"
+    - "ANA"
+    - "anti-dsDNA"
+    - "complement C3"
+    - "complement C4"
+    - "IL-6"
+    - "TNF-alpha"
+    - "HLA-B27"
+
+  lab_variables:
+    - "CRP"
+    - "ESR"
+    - "hemoglobin"
+    - "WBC"
+    - "platelet"
+    - "creatinine"
+    - "eGFR"
+    - "ALT"
+    - "AST"
+    - "albumin"
+    - "immunoglobulin"
+    - "urinalysis"
+    - "proteinuria"
+
+  treatment_variables:
+    - "biologic"
+    - "TNF inhibitor"
+    - "JAK inhibitor"
+    - "IL-17 inhibitor"
+    - "IL-23 inhibitor"
+    - "IL-4/IL-13 inhibitor"
+    - "B-cell depleting"
+    - "rituximab"
+    - "methotrexate"
+    - "conventional DMARD"
+    - "csDMARD"
+    - "bDMARD"
+    - "tsDMARD"
+    - "corticosteroid"
+    - "oral corticosteroid"
+    - "topical therapy"
+    - "treatment switch"
+    - "treatment persistence"
+    - "treatment adherence"
+    - "PDC"
+
+ambiguity_hotspots:
+  - concept: primary_endpoint
+    severity: high
+    warning: >
+      Disease activity scores vary by condition — DAS28 for RA, PASI for psoriasis,
+      SLEDAI for SLE, EASI for atopic dermatitis. Confirm which score is primary
+      and what threshold defines response vs remission.
+
+  - concept: eligibility_inclusion
+    severity: medium
+    warning: >
+      Biologic experience status is critical — confirm whether biologic-naive,
+      biologic-experienced, or inadequate responders. Check how many prior
+      biologics and which mechanism classes are required or excluded.
+
+  - concept: treatment_variables
+    severity: medium
+    warning: >
+      Treatment line definitions differ across immunology conditions.
+      Confirm whether conventional DMARDs count as a prior line. Check if
+      biosimilar switches count as treatment switches.
+
+expected_concepts:
+  - index_date
+  - follow_up_start
+  - follow_up_end
+  - censoring_rules
+  - enrollment_window
+  - baseline_window
+  - primary_endpoint
+  - secondary_endpoint
+  - eligibility_inclusion
+  - eligibility_exclusion
+  - data_source
+  - demographics
+  - clinical_characteristics
+  - biomarkers
+  - lab_variables
+  - treatment_variables
+
+section_priority:
+  index_date:
+    - "Study Design"
+    - "Patient Selection"
+    - "Eligibility"
+  primary_endpoint:
+    - "Endpoints"
+    - "Outcome Definitions"
+    - "Disease Activity"
+    - "Response Criteria"
+  demographics:
+    - "Demographics"
+    - "Baseline Characteristics"
+  clinical_characteristics:
+    - "Clinical Characteristics"
+    - "Baseline Characteristics"
+    - "Disease Activity"
+    - "Comorbidities"
+  biomarkers:
+    - "Biomarkers"
+    - "Serology"
+    - "Autoantibodies"
+    - "Laboratory"
+  lab_variables:
+    - "Laboratory"
+    - "Baseline Characteristics"
+    - "Inflammatory Markers"
+  treatment_variables:
+    - "Treatment"
+    - "Medications"
+    - "Concomitant Therapy"
+    - "Prior Therapy"

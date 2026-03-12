@@ -65,3 +65,37 @@ def test_build_query_bank_with_pack():
 def test_build_query_bank_without_pack():
     queries = build_query_bank("index date definition", None, "index_date")
     assert queries == ["index date definition"]
+
+
+def test_load_respiratory():
+    pack = load_ta_pack("respiratory")
+    assert pack is not None
+    assert pack.name == "respiratory"
+    assert "primary_endpoint" in pack.concept_synonyms
+    assert any("exacerbation" in s.lower() for s in pack.concept_synonyms["primary_endpoint"])
+
+
+def test_load_immunology():
+    pack = load_ta_pack("immunology")
+    assert pack is not None
+    assert pack.name == "immunology"
+    assert "primary_endpoint" in pack.concept_synonyms
+    assert any("DAS28" in s for s in pack.concept_synonyms["primary_endpoint"])
+
+
+def test_load_vaccines():
+    pack = load_ta_pack("vaccines")
+    assert pack is not None
+    assert pack.name == "vaccines"
+    assert "primary_endpoint" in pack.concept_synonyms
+    assert any("vaccine effectiveness" in s.lower() for s in pack.concept_synonyms["primary_endpoint"])
+    assert len(pack.ambiguity_hotspots) >= 3
+
+
+def test_all_packs_have_expected_concepts():
+    for ta in ["oncology", "cardiovascular", "respiratory", "immunology", "vaccines"]:
+        pack = load_ta_pack(ta)
+        assert pack is not None, f"{ta} pack failed to load"
+        assert "index_date" in pack.expected_concepts
+        assert "primary_endpoint" in pack.expected_concepts
+        assert "demographics" in pack.expected_concepts
