@@ -114,10 +114,11 @@ def task_find_censoring_rules(pid, index, client, ta_pack) -> dict:
 def task_run_qc(
     packs_dict: dict[str, dict],
     expected_concepts: Optional[list[str]],
+    chunk_lookup: Optional[dict[str, str]] = None,
 ) -> list[dict]:
     packs = {k: EvidencePack.model_validate(v) for k, v in packs_dict.items()}
     # Run pre-review QC only — post-review QC runs after human selection
-    results = run_all_qc(packs, expected_concepts, stage="pre_review")
+    results = run_all_qc(packs, expected_concepts, stage="pre_review", chunk_lookup=chunk_lookup)
     print(summarize_qc(results))
     return [vars(r) for r in results]
 
@@ -254,8 +255,10 @@ def protocol_run(
     }
 
     # Step 4: Pre-review QC
+    # Build chunk_lookup so qc_quote_in_chunk can validate snippets against source text
+    chunk_lookup = {c["chunk_id"]: c["text"] for c in parse_result["chunks"] if c.get("chunk_id")}
     expected = ta_pack.expected_concepts if ta_pack else None
-    qc_results = task_run_qc(packs, expected)
+    qc_results = task_run_qc(packs, expected, chunk_lookup=chunk_lookup)
 
     # Step 5: Save evidence packs
     output_path = task_save_packs(packs, qc_results, output_dir, pid)

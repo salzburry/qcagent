@@ -164,7 +164,7 @@ data/
 └── outputs/                    # EvidencePack JSON + spec outputs
 
 pyproject.toml                  # Package config — pip install -e .
-requirements.txt                # Pinned dependencies
+requirements.txt                # Dependencies with lower-bound versions
 ```
 
 ---
