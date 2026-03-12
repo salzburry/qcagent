@@ -32,6 +32,11 @@ from ..concepts.index_date import find_index_date
 from ..concepts.endpoints import find_follow_up_end, find_primary_endpoint
 from ..concepts.eligibility import find_inclusion_criteria, find_exclusion_criteria
 from ..concepts.study_design import find_study_period, find_censoring_rules
+from ..concepts.demographics import find_demographics
+from ..concepts.clinical_characteristics import find_clinical_characteristics
+from ..concepts.biomarkers import find_biomarkers
+from ..concepts.lab_variables import find_lab_variables
+from ..concepts.treatment_variables import find_treatment_variables
 from ..schemas.evidence import EvidencePack
 from ..qc.rules import run_all_qc, summarize_qc
 from ..spec_output.spec_schema import build_program_spec
@@ -108,6 +113,31 @@ def task_find_study_period(pid, index, client, ta_pack) -> dict:
 @task(name="find-censoring-rules")
 def task_find_censoring_rules(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_censoring_rules, pid, index, client, ta_pack)
+
+
+@task(name="find-demographics")
+def task_find_demographics(pid, index, client, ta_pack) -> dict:
+    return _run_concept_finder(find_demographics, pid, index, client, ta_pack)
+
+
+@task(name="find-clinical-characteristics")
+def task_find_clinical_characteristics(pid, index, client, ta_pack) -> dict:
+    return _run_concept_finder(find_clinical_characteristics, pid, index, client, ta_pack)
+
+
+@task(name="find-biomarkers")
+def task_find_biomarkers(pid, index, client, ta_pack) -> dict:
+    return _run_concept_finder(find_biomarkers, pid, index, client, ta_pack)
+
+
+@task(name="find-lab-variables")
+def task_find_lab_variables(pid, index, client, ta_pack) -> dict:
+    return _run_concept_finder(find_lab_variables, pid, index, client, ta_pack)
+
+
+@task(name="find-treatment-variables")
+def task_find_treatment_variables(pid, index, client, ta_pack) -> dict:
+    return _run_concept_finder(find_treatment_variables, pid, index, client, ta_pack)
 
 
 @task(name="run-qc")
@@ -203,7 +233,8 @@ def protocol_run(
     Main workflow: protocol PDF → evidence packs → QC → draft spec.
 
     Concepts: index_date, follow_up_end, primary_endpoint,
-    eligibility_inclusion, eligibility_exclusion, study_period, censoring_rules.
+    eligibility_inclusion, eligibility_exclusion, study_period, censoring_rules,
+    demographics, clinical_characteristics, biomarkers, lab_variables, treatment_variables.
 
     Human review happens after this flow completes — via UI.
     """
@@ -243,6 +274,11 @@ def protocol_run(
     exclusion_pack = task_find_exclusion_criteria(pid, index, client, ta_pack)
     study_period_pack = task_find_study_period(pid, index, client, ta_pack)
     censoring_rules_pack = task_find_censoring_rules(pid, index, client, ta_pack)
+    demographics_pack = task_find_demographics(pid, index, client, ta_pack)
+    clinical_chars_pack = task_find_clinical_characteristics(pid, index, client, ta_pack)
+    biomarkers_pack = task_find_biomarkers(pid, index, client, ta_pack)
+    lab_variables_pack = task_find_lab_variables(pid, index, client, ta_pack)
+    treatment_vars_pack = task_find_treatment_variables(pid, index, client, ta_pack)
 
     packs = {
         "index_date": index_date_pack,
@@ -252,6 +288,11 @@ def protocol_run(
         "eligibility_exclusion": exclusion_pack,
         "study_period": study_period_pack,
         "censoring_rules": censoring_rules_pack,
+        "demographics": demographics_pack,
+        "clinical_characteristics": clinical_chars_pack,
+        "biomarkers": biomarkers_pack,
+        "lab_variables": lab_variables_pack,
+        "treatment_variables": treatment_vars_pack,
     }
 
     # Step 4: Pre-review QC

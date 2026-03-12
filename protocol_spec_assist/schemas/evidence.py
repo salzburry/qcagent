@@ -28,6 +28,11 @@ ConceptName = Literal[
     "data_source",
     "analysis_population",
     "key_covariate",
+    "demographics",
+    "clinical_characteristics",
+    "biomarkers",
+    "lab_variables",
+    "treatment_variables",
 ]
 
 SourceType = Literal["narrative", "table", "appendix", "footnote", "amendment"]

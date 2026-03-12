@@ -218,6 +218,180 @@ def test_html_tab_navigation():
 
 # ── Excel writer tests ──────────────────────────────────────────────────────
 
+def test_build_spec_with_variable_tab_packs():
+    """Test that variable tab packs (demographics, etc.) map to correct spec fields."""
+    packs = {
+        "demographics": EvidencePack(
+            protocol_id="P001", concept="demographics",
+            candidates=[
+                EvidenceCandidate(candidate_id="d1", snippet="patient/age_at_diagnosis",
+                    canonical_term="AGE", sponsor_term="AGE", llm_confidence=0.9),
+                EvidenceCandidate(candidate_id="d2", snippet="patient/sex",
+                    canonical_term="SEX", sponsor_term="SEX", llm_confidence=0.85),
+            ],
+            overall_confidence=0.88,
+            concept_metadata={"per_candidate": {
+                "d1": {"time_period": "STUDY_PD", "variable_name": "AGE", "label": "Age at Index",
+                        "values": "numeric", "code_lists_group": "", "additional_notes": ""},
+                "d2": {"time_period": "STUDY_PD", "variable_name": "SEX", "label": "Sex",
+                        "values": "Male; Female", "code_lists_group": "", "additional_notes": ""},
+            }},
+        ),
+        "treatment_variables": EvidencePack(
+            protocol_id="P001", concept="treatment_variables",
+            candidates=[
+                EvidenceCandidate(candidate_id="t1", snippet="Count of LOTs",
+                    canonical_term="LOTN", sponsor_term="LOTN", llm_confidence=0.9),
+            ],
+            overall_confidence=0.85,
+            concept_metadata={"per_candidate": {
+                "t1": {"time_period": "FU", "variable_name": "LOTN", "label": "Number of LOTs",
+                        "values": "numeric", "code_lists_group": "", "additional_notes": ""},
+            }},
+        ),
+    }
+    spec = build_program_spec(packs, protocol_id="P001")
+
+    # Demographics should be in spec.demographics
+    assert len(spec.demographics) == 2
+    assert spec.demographics[0].variable == "AGE"
+    assert spec.demographics[0].time_period == "STUDY_PD"
+    assert spec.demographics[1].variable == "SEX"
+
+    # Treatment variables should be in spec.treatment_variables
+    assert len(spec.treatment_variables) == 1
+    assert spec.treatment_variables[0].variable == "LOTN"
+
+
+def test_build_spec_all_variable_tabs():
+    """Test all 5 variable tab concepts map correctly."""
+    concept_fields = {
+        "demographics": "demographics",
+        "clinical_characteristics": "clinical_characteristics",
+        "biomarkers": "biomarkers",
+        "lab_variables": "lab_variables",
+        "treatment_variables": "treatment_variables",
+    }
+    packs = {}
+    for concept in concept_fields:
+        packs[concept] = EvidencePack(
+            protocol_id="P001", concept=concept,
+            candidates=[
+                EvidenceCandidate(candidate_id=f"{concept}_c1", snippet=f"def for {concept}",
+                    canonical_term=f"VAR_{concept}", sponsor_term=f"VAR_{concept}", llm_confidence=0.8),
+            ],
+            overall_confidence=0.8,
+            concept_metadata={"per_candidate": {
+                f"{concept}_c1": {"time_period": "STUDY_PD", "variable_name": f"VAR_{concept}",
+                                   "label": f"Test {concept}", "values": "numeric",
+                                   "code_lists_group": "", "additional_notes": ""},
+            }},
+        )
+
+    spec = build_program_spec(packs, protocol_id="P001")
+    for concept, field in concept_fields.items():
+        rows = getattr(spec, field)
+        assert len(rows) == 1, f"{field} should have 1 row, got {len(rows)}"
+        assert rows[0].variable == f"VAR_{concept}"
+
+
+# ── Static template tests ──────────────────────────────────────────────────
+
+def test_demographics_static_template():
+    from protocol_spec_assist.concepts.demographics import STATIC_TEMPLATE, _build_static_only_pack
+    # Verify template is exhaustive
+    var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
+    assert "AGE" in var_names
+    assert "SEX" in var_names
+    assert "RACE" in var_names
+    assert "BMI" in var_names
+    assert "PRACTIC" in var_names
+    assert len(STATIC_TEMPLATE) >= 15
+
+    # Static-only pack should produce candidates
+    pack = _build_static_only_pack("P001")
+    assert len(pack.candidates) == len(STATIC_TEMPLATE)
+    assert pack.model_used == "static_template"
+    assert pack.concept_metadata["per_candidate"]
+
+
+def test_clinical_chars_static_template():
+    from protocol_spec_assist.concepts.clinical_characteristics import STATIC_TEMPLATE, _build_static_only_pack
+    var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
+    assert "ECOG" in var_names
+    assert "STAGE" in var_names
+    assert "CCI" in var_names
+    assert "BSYMPT" in var_names
+    pack = _build_static_only_pack("P001")
+    assert len(pack.candidates) == len(STATIC_TEMPLATE)
+
+
+def test_biomarkers_static_template():
+    from protocol_spec_assist.concepts.biomarkers import STATIC_TEMPLATE, _build_static_only_pack
+    var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
+    assert "BCL2" in var_names
+    assert "MYC" in var_names
+    assert "CD20" in var_names
+    assert "DBLHIT" in var_names
+    # Each marker has 5 sub-variables + 2 composites
+    assert len(STATIC_TEMPLATE) >= 70
+    pack = _build_static_only_pack("P001")
+    assert len(pack.candidates) == len(STATIC_TEMPLATE)
+
+
+def test_lab_variables_static_template():
+    from protocol_spec_assist.concepts.lab_variables import STATIC_TEMPLATE, _build_static_only_pack
+    var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
+    assert "LABNEU" in var_names
+    assert "LABPLA" in var_names
+    assert "LABLDH" in var_names
+    # Each lab has 4 sub-variables × 12 labs = 48
+    assert len(STATIC_TEMPLATE) >= 40
+    pack = _build_static_only_pack("P001")
+    assert len(pack.candidates) == len(STATIC_TEMPLATE)
+
+
+def test_treatment_variables_static_template():
+    from protocol_spec_assist.concepts.treatment_variables import STATIC_TEMPLATE, _build_static_only_pack
+    var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
+    assert "LOTN" in var_names
+    assert "LOT1SD" in var_names
+    assert "LOT1" in var_names
+    assert "CSD" in var_names
+    assert "TTNT" in var_names
+    pack = _build_static_only_pack("P001")
+    assert len(pack.candidates) == len(STATIC_TEMPLATE)
+
+
+def test_demographics_merge_with_static():
+    """Test that merge preserves LLM variables and fills gaps from template."""
+    from protocol_spec_assist.concepts.demographics import (
+        DemographicsExtraction, _merge_with_static_template, STATIC_TEMPLATE,
+    )
+    VarClass = DemographicsExtraction.VariableExtraction
+    # LLM found only AGE with protocol-specific definition
+    llm_vars = [VarClass(
+        chunk_id="ch1", time_period="STUDY_PD", variable_name="AGE",
+        label="Age at Index (custom)", values="integer",
+        definition="Custom AGE definition from protocol",
+        explicit="explicit", confidence=0.95,
+        reasoning="Found in protocol",
+    )]
+    merged = _merge_with_static_template(llm_vars, STATIC_TEMPLATE)
+    # Should have all template vars + LLM's custom AGE
+    assert len(merged) == len(STATIC_TEMPLATE)
+    # AGE should use LLM definition
+    age_var = next(v for v in merged if v.variable_name == "AGE")
+    assert age_var.definition == "Custom AGE definition from protocol"
+    assert age_var.confidence == 0.95
+    # SEX should be static default
+    sex_var = next(v for v in merged if v.variable_name == "SEX")
+    assert sex_var.explicit == "inferred"
+    assert sex_var.confidence == 0.5
+
+
+# ── Excel writer tests ──────────────────────────────────────────────────────
+
 def test_excel_import():
     """Just verify the excel_writer module can be imported."""
     try:

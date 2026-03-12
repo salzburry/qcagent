@@ -63,6 +63,77 @@ ambiguity_hotspots:
       or censoring event for non-fatal outcomes. Check if cause-specific or
       subdistribution hazard model is specified.
 
+  demographics:
+    - "age"
+    - "sex"
+    - "gender"
+    - "race"
+    - "ethnicity"
+    - "BMI"
+    - "body mass index"
+    - "weight"
+    - "height"
+    - "smoking status"
+    - "geographic region"
+
+  clinical_characteristics:
+    - "NYHA class"
+    - "ejection fraction"
+    - "LVEF"
+    - "blood pressure"
+    - "heart rate"
+    - "diabetes"
+    - "hypertension"
+    - "atrial fibrillation"
+    - "chronic kidney disease"
+    - "prior MI"
+    - "prior stroke"
+    - "PAD"
+    - "Charlson comorbidity"
+    - "CCI"
+
+  biomarkers:
+    - "troponin"
+    - "BNP"
+    - "NT-proBNP"
+    - "CRP"
+    - "hsCRP"
+    - "HbA1c"
+    - "D-dimer"
+    - "fibrinogen"
+
+  lab_variables:
+    - "creatinine"
+    - "eGFR"
+    - "potassium"
+    - "sodium"
+    - "hemoglobin"
+    - "platelet"
+    - "lipid panel"
+    - "LDL"
+    - "HDL"
+    - "total cholesterol"
+    - "triglycerides"
+    - "ALT"
+    - "AST"
+    - "BUN"
+    - "glucose"
+
+  treatment_variables:
+    - "antithrombotic"
+    - "anticoagulant"
+    - "antiplatelet"
+    - "statin"
+    - "beta blocker"
+    - "ACE inhibitor"
+    - "ARB"
+    - "diuretic"
+    - "calcium channel blocker"
+    - "treatment pattern"
+    - "medication adherence"
+    - "PDC"
+    - "proportion of days covered"
+
 expected_concepts:
   - index_date
   - follow_up_start
@@ -77,6 +148,11 @@ expected_concepts:
   - data_source
   - analysis_population
   - key_covariate
+  - demographics
+  - clinical_characteristics
+  - biomarkers
+  - lab_variables
+  - treatment_variables
 
 section_priority:
   index_date:
@@ -92,3 +168,27 @@ section_priority:
     - "Statistical Analysis"
     - "Censoring"
     - "Competing Risks"
+  demographics:
+    - "Demographics"
+    - "Baseline Characteristics"
+    - "Patient Characteristics"
+    - "Study Population"
+  clinical_characteristics:
+    - "Clinical Characteristics"
+    - "Baseline Characteristics"
+    - "Comorbidities"
+    - "Medical History"
+  biomarkers:
+    - "Biomarkers"
+    - "Laboratory"
+    - "Cardiac Markers"
+  lab_variables:
+    - "Laboratory"
+    - "Baseline Characteristics"
+    - "Lab Values"
+    - "Clinical Assessments"
+  treatment_variables:
+    - "Treatment"
+    - "Medications"
+    - "Concomitant Therapy"
+    - "Study Design"

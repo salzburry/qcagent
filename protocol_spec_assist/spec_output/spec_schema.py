@@ -416,4 +416,34 @@ def build_program_spec(
                 explicit=cand.explicit,
             ))
 
+    # ── Variable tabs (5A–6): demographics, clinical chars, biomarkers, labs, treatment ──
+    _VARIABLE_TAB_CONCEPTS = {
+        "demographics": "demographics",
+        "clinical_characteristics": "clinical_characteristics",
+        "biomarkers": "biomarkers",
+        "lab_variables": "lab_variables",
+        "treatment_variables": "treatment_variables",
+    }
+    for concept_key, spec_field in _VARIABLE_TAB_CONCEPTS.items():
+        if concept_key not in packs:
+            continue
+        var_pack = packs[concept_key]
+        meta = (var_pack.concept_metadata or {}).get("per_candidate", {})
+        candidates = var_pack.selected_candidates if var_pack.selected_candidates is not None else var_pack.candidates
+        target_list = getattr(spec, spec_field)
+        for cand in candidates:
+            cm = meta.get(cand.candidate_id, {})
+            target_list.append(VariableRow(
+                time_period=cm.get("time_period", ""),
+                variable=cm.get("variable_name", cand.canonical_term or ""),
+                label=cm.get("label", ""),
+                values=cm.get("values", ""),
+                definition=cand.snippet,
+                code_lists_group=cm.get("code_lists_group", ""),
+                additional_notes=cm.get("additional_notes", ""),
+                source_page=cand.page,
+                confidence=cand.llm_confidence,
+                explicit=cand.explicit,
+            ))
+
     return spec

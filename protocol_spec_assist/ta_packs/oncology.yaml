@@ -87,6 +87,86 @@ ambiguity_hotspots:
       Ensure time-zero anchor matches index date definition.
       Check estimand framework section if present.
 
+  demographics:
+    - "age"
+    - "sex"
+    - "gender"
+    - "race"
+    - "ethnicity"
+    - "BMI"
+    - "body mass index"
+    - "weight"
+    - "height"
+    - "practice type"
+    - "smoking status"
+    - "geographic region"
+
+  clinical_characteristics:
+    - "ECOG"
+    - "performance status"
+    - "disease stage"
+    - "Ann Arbor stage"
+    - "Charlson comorbidity"
+    - "CCI"
+    - "B symptoms"
+    - "bulky disease"
+    - "extranodal"
+    - "histology"
+    - "subtype"
+    - "IPI score"
+    - "CNS involvement"
+    - "bone marrow involvement"
+
+  biomarkers:
+    - "BCL2"
+    - "BCL6"
+    - "MYC"
+    - "CD10"
+    - "CD19"
+    - "CD20"
+    - "PD-L1"
+    - "Ki-67"
+    - "TP53"
+    - "IHC"
+    - "FISH"
+    - "immunohistochemistry"
+    - "molecular marker"
+    - "rearrangement"
+    - "double hit"
+    - "triple hit"
+
+  lab_variables:
+    - "neutrophil"
+    - "ANC"
+    - "platelet"
+    - "hemoglobin"
+    - "creatinine"
+    - "bilirubin"
+    - "AST"
+    - "ALT"
+    - "alkaline phosphatase"
+    - "albumin"
+    - "LDH"
+    - "lymphocyte"
+    - "white blood cell"
+    - "WBC"
+    - "laboratory"
+
+  treatment_variables:
+    - "line of therapy"
+    - "LOT"
+    - "regimen"
+    - "chemotherapy"
+    - "immunotherapy"
+    - "maintenance therapy"
+    - "treatment duration"
+    - "clinical study drug"
+    - "drug episode"
+    - "treatment pattern"
+    - "R-CHOP"
+    - "CAR-T"
+    - "stem cell transplant"
+
 expected_concepts:
   - index_date
   - follow_up_start
@@ -102,6 +182,11 @@ expected_concepts:
   - data_source
   - analysis_population
   - key_covariate
+  - demographics
+  - clinical_characteristics
+  - biomarkers
+  - lab_variables
+  - treatment_variables
 
 section_priority:
   index_date:
@@ -137,3 +222,31 @@ section_priority:
     - "Data Source"
     - "Methods"
     - "Overview"
+  demographics:
+    - "Demographics"
+    - "Baseline Characteristics"
+    - "Patient Characteristics"
+    - "Study Population"
+  clinical_characteristics:
+    - "Clinical Characteristics"
+    - "Baseline Characteristics"
+    - "Disease Characteristics"
+    - "Patient Characteristics"
+    - "Staging"
+  biomarkers:
+    - "Biomarkers"
+    - "Molecular"
+    - "Pathology"
+    - "Immunohistochemistry"
+    - "Appendix"
+  lab_variables:
+    - "Laboratory"
+    - "Baseline Characteristics"
+    - "Lab Values"
+    - "Clinical Assessments"
+  treatment_variables:
+    - "Treatment"
+    - "Line of Therapy"
+    - "Regimen"
+    - "Study Design"
+    - "Appendix"
