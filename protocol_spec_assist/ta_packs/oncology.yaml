@@ -127,3 +127,13 @@ section_priority:
     - "Endpoints"
     - "Outcome Measures"
     - "Statistical Analysis"
+  censoring_rules:
+    - "Statistical Analysis"
+    - "Censoring"
+    - "Endpoints"
+    - "Outcome Measures"
+  study_period:
+    - "Study Design"
+    - "Data Source"
+    - "Methods"
+    - "Overview"
