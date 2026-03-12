@@ -149,10 +149,11 @@ def _merge_with_static_template(extraction_variables, static_template):
                 sponsor_term=None, explicit="inferred", confidence=0.5,
                 reasoning="Static template default — not confirmed in protocol text",
             ))
+    unmapped = []
     for v in extraction_variables:
         if v.variable_name.upper() not in used_names:
-            merged.append(v)
-    return merged
+            unmapped.append(v)
+    return merged, unmapped
 
 
 def _build_static_only_pack(protocol_id: str, data_source: str = "generic") -> EvidencePack:
@@ -238,7 +239,7 @@ def find_treatment_variables(
 
     # Merge with static template
     resolved_template = resolve_static_template(STATIC_TEMPLATE, data_source, CONCEPT)
-    merged_variables = _merge_with_static_template(extraction.variables, resolved_template)
+    merged_variables, unmapped_variables = _merge_with_static_template(extraction.variables, resolved_template)
 
     chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
     candidates = []
@@ -274,7 +275,14 @@ def find_treatment_variables(
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
-        concept_metadata={"per_candidate": per_candidate_meta},
+        concept_metadata={
+            "per_candidate": per_candidate_meta,
+            "unmapped_variables": [
+                {"variable_name": v.variable_name, "label": v.label,
+                 "definition": v.definition, "confidence": v.confidence}
+                for v in unmapped_variables
+            ],
+        },
         low_retrieval_signal=len(chunks) < 3,
         adjudicator_used=used_adjudicator,
         requires_human_selection=True,

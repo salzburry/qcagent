@@ -9,9 +9,17 @@ Generates a tabbed view matching the Excel structure:
 """
 
 from __future__ import annotations
+import html
 from pathlib import Path
 
 from .spec_schema import ProgramSpec, VariableRow
+
+
+def _esc(text: str | None) -> str:
+    """HTML-escape dynamic text to prevent XSS/rendering issues."""
+    if text is None:
+        return ""
+    return html.escape(str(text))
 
 
 def _confidence_badge(conf: float | None) -> str:
@@ -46,13 +54,13 @@ def _variable_table(rows: list[VariableRow], empty_msg: str = "No variables extr
     for v in rows:
         body += (
             f"<tr>"
-            f"<td>{v.time_period}</td>"
-            f"<td><code>{v.variable}</code></td>"
-            f"<td>{v.label}</td>"
-            f"<td>{v.values}</td>"
-            f"<td>{v.definition}</td>"
-            f"<td>{v.code_lists_group}</td>"
-            f"<td>{v.additional_notes}</td>"
+            f"<td>{_esc(v.time_period)}</td>"
+            f"<td><code>{_esc(v.variable)}</code></td>"
+            f"<td>{_esc(v.label)}</td>"
+            f"<td>{_esc(v.values)}</td>"
+            f"<td>{_esc(v.definition)}</td>"
+            f"<td>{_esc(v.code_lists_group)}</td>"
+            f"<td>{_esc(v.additional_notes)}</td>"
             f"<td>{_confidence_badge(v.confidence)}{_page_ref(v.source_page)}</td>"
             f"</tr>\n"
         )
@@ -68,7 +76,7 @@ def render_html(spec: ProgramSpec) -> str:
     # QC warnings
     qc_html = ""
     if spec.qc_warnings:
-        items = "".join(f"<li>{w}</li>" for w in spec.qc_warnings)
+        items = "".join(f"<li>{_esc(w)}</li>" for w in spec.qc_warnings)
         qc_html = f'<div class="qc-bar"><strong>QC Warnings:</strong><ul>{items}</ul></div>'
 
     # ── Cover tab content ──
@@ -81,13 +89,13 @@ def render_html(spec: ProgramSpec) -> str:
         ("Study Status", spec.study_info.study_status),
     ]:
         if val:
-            study_info_rows += f"<tr><td><strong>{label}</strong></td><td>{val}</td></tr>\n"
+            study_info_rows += f"<tr><td><strong>{_esc(label)}</strong></td><td>{_esc(val)}</td></tr>\n"
 
     tab_status_rows = ""
     for ts in spec.tab_statuses:
         tab_status_rows += (
-            f"<tr><td>{ts.tab}</td><td>{ts.purpose}</td>"
-            f"<td>{ts.status}</td></tr>\n"
+            f"<tr><td>{_esc(ts.tab)}</td><td>{_esc(ts.purpose)}</td>"
+            f"<td>{_esc(ts.status)}</td></tr>\n"
         )
 
     # ── Data Prep content ──
@@ -96,24 +104,24 @@ def render_html(spec: ProgramSpec) -> str:
         data_source_html = (
             f"<h3>Data Source</h3>"
             f"<table><tr><th>Source</th><th>Population Subset</th><th>Version</th></tr>"
-            f"<tr><td>{spec.data_source.data_source}</td>"
-            f"<td>{spec.data_source.population_subset}</td>"
-            f"<td>{spec.data_source.version}</td></tr></table>"
+            f"<tr><td>{_esc(spec.data_source.data_source)}</td>"
+            f"<td>{_esc(spec.data_source.population_subset)}</td>"
+            f"<td>{_esc(spec.data_source.version)}</td></tr></table>"
         )
 
     important_dates_rows = ""
     for dt in spec.important_dates:
         important_dates_rows += (
-            f"<tr><td><code>{dt.variable}</code></td><td>{dt.label}</td>"
-            f"<td>{dt.definition}</td><td>{dt.additional_notes}</td>"
+            f"<tr><td><code>{_esc(dt.variable)}</code></td><td>{_esc(dt.label)}</td>"
+            f"<td>{_esc(dt.definition)}</td><td>{_esc(dt.additional_notes)}</td>"
             f"<td>{_confidence_badge(dt.confidence)}{_page_ref(dt.source_page)}</td></tr>\n"
         )
 
     time_period_rows = ""
     for tp in spec.time_periods:
         time_period_rows += (
-            f"<tr><td><code>{tp.time_period}</code></td><td>{tp.label}</td>"
-            f"<td>{tp.definition}</td><td>{tp.additional_notes}</td>"
+            f"<tr><td><code>{_esc(tp.time_period)}</code></td><td>{_esc(tp.label)}</td>"
+            f"<td>{_esc(tp.definition)}</td><td>{_esc(tp.additional_notes)}</td>"
             f"<td>{_confidence_badge(tp.confidence)}{_page_ref(tp.source_page)}</td></tr>\n"
         )
 
@@ -122,11 +130,11 @@ def render_html(spec: ProgramSpec) -> str:
         rows = ""
         for c in criteria:
             rows += (
-                f"<tr><td>{c.time_period}</td>"
-                f"<td><code>{c.variable}</code></td>"
-                f"<td>{c.label}</td><td>{c.values}</td>"
-                f"<td>{c.definition}</td>"
-                f"<td>{c.additional_notes}</td>"
+                f"<tr><td>{_esc(c.time_period)}</td>"
+                f"<td><code>{_esc(c.variable)}</code></td>"
+                f"<td>{_esc(c.label)}</td><td>{_esc(c.values)}</td>"
+                f"<td>{_esc(c.definition)}</td>"
+                f"<td>{_esc(c.additional_notes)}</td>"
                 f"<td>{_confidence_badge(c.confidence)}{_page_ref(c.source_page)}</td></tr>\n"
             )
         return rows
@@ -137,9 +145,9 @@ def render_html(spec: ProgramSpec) -> str:
     cohort_rows = ""
     for coh in spec.cohort_definitions:
         cohort_rows += (
-            f"<tr><td><code>{coh.variable}</code></td><td>{coh.label}</td>"
-            f"<td>{coh.values}</td><td>{coh.definition}</td>"
-            f"<td>{coh.additional_notes}</td></tr>\n"
+            f"<tr><td><code>{_esc(coh.variable)}</code></td><td>{_esc(coh.label)}</td>"
+            f"<td>{_esc(coh.values)}</td><td>{_esc(coh.definition)}</td>"
+            f"<td>{_esc(coh.additional_notes)}</td></tr>\n"
         )
 
     # ── Variable tab sections ──
@@ -149,6 +157,7 @@ def render_html(spec: ProgramSpec) -> str:
     lab_table = _variable_table(spec.lab_variables, "No laboratory variables extracted.")
     treat_table = _variable_table(spec.treatment_variables, "No treatment variables extracted.")
     outcome_table = _variable_table(spec.outcome_variables, "No outcome variables extracted.")
+    unmapped_table = _variable_table(spec.unmapped_variables, "No unmapped variables (all LLM outputs matched templates).")
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -196,6 +205,7 @@ code {{ background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.
 <a href="#labvars">5D.LabVars</a>
 <a href="#treatvars">6.TreatVars</a>
 <a href="#outcomes">7.Outcomes</a>
+<a href="#unmapped" style="background:#854d0e;">Unmapped</a>
 </nav>
 
 <!-- 1. Cover -->
@@ -275,6 +285,15 @@ code {{ background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-size: 0.
 <!-- 7. Outcomes -->
 <h2 id="outcomes">7. Outcomes</h2>
 {outcome_table}
+
+<!-- Unmapped Variables -->
+<h2 id="unmapped" style="color:#854d0e;">Unmapped Variables (Review Only)</h2>
+<p style="color:#854d0e; font-size:0.9em;">
+Variables below were found by the LLM but do not match any static template variable.
+They are <strong>not</strong> included in the production spec tabs. Review and manually
+assign to the correct tab if valid, or discard if spurious.
+</p>
+{unmapped_table}
 
 <footer style="margin-top: 40px; color: #9ca3af; font-size: 0.85em;">
 Generated by Protocol Spec Assist v{spec.spec_version} | Mode: {mode_label}

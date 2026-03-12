@@ -198,6 +198,10 @@ class ProgramSpec(BaseModel):
     # Tab 7: Outcomes
     outcome_variables: list[VariableRow] = Field(default_factory=list)
 
+    # Unmapped variables — LLM found these but they don't match any static template.
+    # Review-only: not written to production spec tabs.
+    unmapped_variables: list[VariableRow] = Field(default_factory=list)
+
 
 # ── Legacy compat aliases (kept so existing imports don't break) ───────────
 
@@ -216,6 +220,17 @@ CensoringRuleEntry = VariableRow  # alias — censoring now lives in Outcomes ta
 
 
 # ── Builder helpers ────────────────────────────────────────────────────────
+
+def _get_governing_text(pack: EvidencePack) -> str | None:
+    """Get the governing text: reviewer override > selected candidate > top-ranked."""
+    if pack.reviewer_override is not None:
+        return pack.reviewer_override
+    if pack.selected_candidate is not None:
+        return pack.selected_candidate.snippet
+    if pack.candidates:
+        return pack.candidates[0].snippet
+    return None
+
 
 def _get_governing_candidate(pack: EvidencePack):
     """Get the governing candidate: selected by reviewer, or top-ranked if draft."""
@@ -267,8 +282,13 @@ def build_program_spec(
         qc_warnings=qc_warnings or [],
     )
 
-    # Determine generation mode
-    any_reviewed = any(p.selected_candidate_id is not None for p in packs.values())
+    # Determine generation mode — reviewed if any pack has review state set
+    any_reviewed = any(
+        p.selected_candidate_id is not None
+        or p.selected_candidate_ids is not None
+        or p.reviewer_override is not None
+        for p in packs.values()
+    )
     spec.generation_mode = "reviewed" if any_reviewed else "draft"
 
     # ── Cover tab ──
@@ -286,12 +306,15 @@ def build_program_spec(
             version=meta.get("data_source_version") or "",
         )
 
-        # Important dates
+        # Important dates — initial diagnosis (label derived from protocol metadata)
         if meta.get("study_period_start") or meta.get("study_period_end"):
+            indication = meta.get("indication") or spec.study_info.indication or ""
+            init_label = f"Initial {indication} diagnosis date" if indication else "Initial diagnosis date"
+            init_def = meta.get("diagnosis_definition") or "Date of first qualifying diagnosis"
             spec.important_dates.append(ImportantDate(
                 variable="INIT",
-                label="Initial LBCL diagnosis date",
-                definition="disease_initial_diagnosis/date_initial_diagnosis",
+                label=init_label,
+                definition=init_def,
                 additional_notes="",
             ))
 
@@ -307,36 +330,39 @@ def build_program_spec(
 
     # ── Data Prep: index date ──
     if "index_date" in packs:
-        cand = _get_governing_candidate(packs["index_date"])
-        if cand:
+        idx_pack = packs["index_date"]
+        gov_text = _get_governing_text(idx_pack)
+        cand = _get_governing_candidate(idx_pack)
+        if gov_text:
             spec.important_dates.append(ImportantDate(
                 variable="INDEX",
                 label="Index date",
-                definition=cand.snippet,
-                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}",
-                source_page=cand.page,
-                confidence=cand.llm_confidence,
+                definition=gov_text,
+                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
+                source_page=cand.page if cand else None,
+                confidence=cand.llm_confidence if cand else None,
             ))
 
     # ── Data Prep: follow-up end ──
     if "follow_up_end" in packs:
-        cand = _get_governing_candidate(packs["follow_up_end"])
-        if cand:
+        fu_pack = packs["follow_up_end"]
+        gov_text = _get_governing_text(fu_pack)
+        cand = _get_governing_candidate(fu_pack)
+        if gov_text:
             spec.important_dates.append(ImportantDate(
                 variable="FUED",
                 label="End of follow-up date",
-                definition=cand.snippet,
-                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}",
-                source_page=cand.page,
-                confidence=cand.llm_confidence,
+                definition=gov_text,
+                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
+                source_page=cand.page if cand else None,
+                confidence=cand.llm_confidence if cand else None,
             ))
-            # Also add as a time period
             spec.time_periods.append(TimePeriod(
                 time_period="FU",
                 label="Follow-up period",
-                definition=cand.snippet,
-                source_page=cand.page,
-                confidence=cand.llm_confidence,
+                definition=gov_text,
+                source_page=cand.page if cand else None,
+                confidence=cand.llm_confidence if cand else None,
             ))
 
     # ── StudyPop: inclusion criteria ──
@@ -383,18 +409,20 @@ def build_program_spec(
 
     # ── Outcomes: primary endpoint ──
     if "primary_endpoint" in packs:
-        cand = _get_governing_candidate(packs["primary_endpoint"])
-        if cand:
+        ep_pack = packs["primary_endpoint"]
+        gov_text = _get_governing_text(ep_pack)
+        cand = _get_governing_candidate(ep_pack)
+        if gov_text:
             spec.outcome_variables.append(VariableRow(
                 time_period="FU",
                 variable="PRIMARY_EP",
                 label="Primary Endpoint",
                 values="",
-                definition=cand.snippet,
-                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}",
-                source_page=cand.page,
-                confidence=cand.llm_confidence,
-                explicit=cand.explicit,
+                definition=gov_text,
+                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
+                source_page=cand.page if cand else None,
+                confidence=cand.llm_confidence if cand else None,
+                explicit=cand.explicit if cand else "explicit",
             ))
 
     # ── Outcomes: censoring rules ──
@@ -444,6 +472,21 @@ def build_program_spec(
                 source_page=cand.page,
                 confidence=cand.llm_confidence,
                 explicit=cand.explicit,
+            ))
+
+    # ── Unmapped variables: LLM-found variables not in any static template ──
+    for concept_key in _VARIABLE_TAB_CONCEPTS:
+        if concept_key not in packs:
+            continue
+        var_pack = packs[concept_key]
+        meta = var_pack.concept_metadata or {}
+        for uv in meta.get("unmapped_variables", []):
+            spec.unmapped_variables.append(VariableRow(
+                variable=uv.get("variable_name", ""),
+                label=uv.get("label", ""),
+                definition=uv.get("definition", ""),
+                confidence=uv.get("confidence"),
+                additional_notes=f"Source tab: {concept_key} (review required)",
             ))
 
     return spec
