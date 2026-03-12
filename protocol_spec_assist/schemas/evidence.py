@@ -97,7 +97,7 @@ class EvidencePack(BaseModel):
     def is_resolved(self) -> bool:
         return (
             self.selected_candidate is not None
-            or self.selected_candidate_ids is not None
+            or bool(self.selected_candidate_ids)
             or self.reviewer_override is not None
         )
 

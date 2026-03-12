@@ -234,14 +234,19 @@ python -m protocol_spec_assist.workflows.protocol_run \
 Step 0: Model preflight      — verifies vLLM is reachable and model is loaded
 Step 1: Parse protocol        — Docling extracts sections, tables, pages (~30-120s)
 Step 2: Index protocol        — BGE-M3 embeds chunks, Qdrant indexes (~20-60s)
-Step 3: Find concepts         — 7 concept finders run sequentially:
+Step 3: Find concepts         — 12 concept finders run sequentially:
         ├── index_date            — hybrid retrieval → rerank → LLM extract
         ├── follow_up_end         — same workflow, different queries/schema
         ├── primary_endpoint      — same workflow, different queries/schema
         ├── eligibility_inclusion — extracts all inclusion criteria
         ├── eligibility_exclusion — extracts all exclusion criteria
         ├── study_period          — extracts study dates, data source, design type
-        └── censoring_rules       — extracts all censoring rules
+        ├── censoring_rules       — extracts all censoring rules
+        ├── demographics          — static template + LLM refinement (source-aware)
+        ├── clinical_characteristics — static template + LLM refinement
+        ├── biomarkers            — static template + LLM refinement
+        ├── lab_variables         — static template + LLM refinement
+        └── treatment_variables   — static template + LLM refinement
         Note: if confidence is low, each finder attempts an adjudicator pass.
         If the adjudicator is unavailable, the first-pass result is kept.
         All finders share a single ProtocolIndex (no repeated model loading).
@@ -292,10 +297,10 @@ The pipeline produces 4 output files:
 - `*_evidence_packs.json`: raw evidence packs + QC results
 - `*_spec.json`: structured ProgramSpec (machine-readable)
 - `*_spec.html`: self-contained HTML preview with confidence badges
-- `*_spec.xlsx`: formatted Excel workbook (5 tabs, color-coded)
+- `*_spec.xlsx`: formatted Excel workbook (10 sheets: 1.Cover, 2.QC Review, 3.Data Prep, 4.StudyPop, 5A.Demos, 5B.ClinChars, 5C.BioVars, 5D.LabVars, 6.TreatVars, 7.Outcomes)
 
 The evidence packs contain:
-- `evidence_packs`: one EvidencePack per concept (7 concepts), each with ranked candidates
+- `evidence_packs`: one EvidencePack per concept (12 concepts), each with ranked candidates
 - `qc_results`: list of QC findings (errors, warnings, info)
 
 Each candidate has:
