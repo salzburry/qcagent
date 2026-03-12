@@ -315,6 +315,31 @@ def test_demographics_static_template():
     assert pack.concept_metadata["per_candidate"]
 
 
+def test_demographics_static_template_with_source():
+    from protocol_spec_assist.concepts.demographics import STATIC_TEMPLATE, _build_static_only_pack
+    pack_cota = _build_static_only_pack("P001", data_source="cota")
+    assert len(pack_cota.candidates) == len(STATIC_TEMPLATE)
+    # COTA-specific AGE definition should differ from generic
+    age_cand = next(c for c in pack_cota.candidates if c.sponsor_term == "AGE")
+    assert "COTA" in age_cand.snippet or "date_of_birth" in age_cand.snippet
+
+    pack_generic = _build_static_only_pack("P001", data_source="generic")
+    assert len(pack_generic.candidates) == len(STATIC_TEMPLATE)
+
+
+def test_clinical_chars_static_template_with_source():
+    from protocol_spec_assist.concepts.clinical_characteristics import _build_static_only_pack
+    pack = _build_static_only_pack("P001", data_source="optum_cdm")
+    # Should still produce candidates even though some vars unavailable in claims
+    assert len(pack.candidates) > 0
+
+
+def test_lab_variables_static_template_with_source():
+    from protocol_spec_assist.concepts.lab_variables import _build_static_only_pack
+    pack = _build_static_only_pack("P001", data_source="quest")
+    assert len(pack.candidates) > 0
+
+
 def test_clinical_chars_static_template():
     from protocol_spec_assist.concepts.clinical_characteristics import STATIC_TEMPLATE, _build_static_only_pack
     var_names = [t["variable_name"] for t in STATIC_TEMPLATE]

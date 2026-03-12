@@ -1,0 +1,148 @@
+# Respiratory TA Pack
+# Covers asthma, COPD, IPF, and other respiratory conditions
+
+concept_synonyms:
+  index_date:
+    - "cohort entry"
+    - "first qualifying diagnosis"
+    - "first exacerbation"
+    - "initiation of therapy"
+    - "first prescription"
+
+  follow_up_end:
+    - "end of follow-up"
+    - "data cutoff"
+    - "death"
+    - "disenrollment"
+    - "end of study"
+
+  primary_endpoint:
+    - "exacerbation"
+    - "severe exacerbation"
+    - "hospitalization"
+    - "FEV1 decline"
+    - "rate of decline"
+    - "annualized exacerbation rate"
+
+  eligibility_inclusion:
+    - "inclusion criteria"
+    - "qualifying diagnosis"
+    - "confirmed diagnosis"
+    - "spirometry confirmed"
+
+  demographics:
+    - "age"
+    - "sex"
+    - "race"
+    - "ethnicity"
+    - "BMI"
+    - "smoking status"
+    - "smoking history"
+    - "pack-years"
+
+  clinical_characteristics:
+    - "FEV1"
+    - "FVC"
+    - "FEV1/FVC ratio"
+    - "GOLD stage"
+    - "asthma severity"
+    - "exacerbation history"
+    - "blood eosinophils"
+    - "ICS use"
+    - "LABA"
+    - "LAMA"
+    - "mMRC dyspnea"
+    - "CAT score"
+    - "ACQ score"
+    - "AQLQ"
+
+  biomarkers:
+    - "eosinophils"
+    - "IgE"
+    - "FeNO"
+    - "periostin"
+    - "blood eosinophil count"
+
+  lab_variables:
+    - "eosinophil count"
+    - "IgE level"
+    - "blood gas"
+    - "CRP"
+    - "hemoglobin"
+    - "creatinine"
+
+  treatment_variables:
+    - "ICS"
+    - "LABA"
+    - "LAMA"
+    - "biologic"
+    - "oral corticosteroid"
+    - "rescue inhaler"
+    - "SABA"
+    - "triple therapy"
+    - "step-up"
+    - "step-down"
+    - "treatment adherence"
+    - "PDC"
+
+ambiguity_hotspots:
+  - concept: primary_endpoint
+    severity: high
+    warning: >
+      Exacerbation definitions vary significantly — moderate (OCS burst),
+      severe (hospitalization/ED), vs any exacerbation. Confirm exact definition
+      and whether composite or individual components.
+
+  - concept: eligibility_inclusion
+    severity: medium
+    warning: >
+      COPD diagnosis confirmation requirements vary — spirometry-confirmed
+      vs clinical diagnosis. Check if reversibility testing is required.
+      Asthma-COPD overlap may affect eligibility.
+
+expected_concepts:
+  - index_date
+  - follow_up_start
+  - follow_up_end
+  - censoring_rules
+  - enrollment_window
+  - baseline_window
+  - primary_endpoint
+  - secondary_endpoint
+  - eligibility_inclusion
+  - eligibility_exclusion
+  - data_source
+  - demographics
+  - clinical_characteristics
+  - biomarkers
+  - lab_variables
+  - treatment_variables
+
+section_priority:
+  index_date:
+    - "Study Design"
+    - "Patient Selection"
+    - "Eligibility"
+  primary_endpoint:
+    - "Endpoints"
+    - "Outcome Definitions"
+    - "Exacerbation"
+  demographics:
+    - "Demographics"
+    - "Baseline Characteristics"
+  clinical_characteristics:
+    - "Clinical Characteristics"
+    - "Pulmonary Function"
+    - "Spirometry"
+    - "Baseline Characteristics"
+  biomarkers:
+    - "Biomarkers"
+    - "Eosinophils"
+    - "Laboratory"
+  lab_variables:
+    - "Laboratory"
+    - "Baseline Characteristics"
+  treatment_variables:
+    - "Treatment"
+    - "Medications"
+    - "Concomitant Therapy"

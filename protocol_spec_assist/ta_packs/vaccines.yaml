@@ -1,0 +1,199 @@
+# Vaccines TA Pack
+# Covers vaccine effectiveness, safety, and coverage studies
+# Including influenza, RSV, COVID-19, shingles, pneumococcal, and others
+
+concept_synonyms:
+  index_date:
+    - "vaccination date"
+    - "first dose"
+    - "dose 1"
+    - "index vaccination"
+    - "cohort entry"
+    - "immunization date"
+
+  follow_up_end:
+    - "end of follow-up"
+    - "data cutoff"
+    - "death"
+    - "disenrollment"
+    - "end of season"
+    - "end of study"
+    - "end of surveillance"
+
+  primary_endpoint:
+    - "vaccine effectiveness"
+    - "VE"
+    - "confirmed infection"
+    - "lab-confirmed"
+    - "PCR-confirmed"
+    - "hospitalization"
+    - "medically attended"
+    - "MAARI"
+    - "SARI"
+    - "adverse event"
+    - "serious adverse event"
+    - "incidence rate"
+    - "attack rate"
+    - "seroconversion"
+    - "seroprotection"
+
+  eligibility_inclusion:
+    - "inclusion criteria"
+    - "eligible population"
+    - "vaccination eligible"
+    - "age eligible"
+    - "recommended population"
+    - "high risk"
+    - "immunocompromised"
+
+  demographics:
+    - "age"
+    - "age group"
+    - "sex"
+    - "race"
+    - "ethnicity"
+    - "geographic region"
+    - "urbanicity"
+    - "pregnancy status"
+    - "nursing home"
+    - "long-term care"
+
+  clinical_characteristics:
+    - "comorbidities"
+    - "CCI"
+    - "Charlson comorbidity"
+    - "immunocompromised status"
+    - "frailty"
+    - "frailty index"
+    - "prior infection"
+    - "prior vaccination"
+    - "vaccination history"
+    - "number of prior doses"
+    - "time since last dose"
+    - "high risk condition"
+    - "chronic lung disease"
+    - "chronic heart disease"
+    - "diabetes"
+    - "obesity"
+
+  biomarkers:
+    - "antibody titer"
+    - "GMT"
+    - "geometric mean titer"
+    - "seroconversion rate"
+    - "seroprotection rate"
+    - "neutralizing antibody"
+    - "IgG"
+    - "IgA"
+    - "T-cell response"
+    - "cell-mediated immunity"
+
+  lab_variables:
+    - "PCR result"
+    - "antigen test"
+    - "serology"
+    - "antibody level"
+    - "viral genotype"
+    - "strain"
+    - "variant"
+    - "WBC"
+    - "lymphocyte count"
+
+  treatment_variables:
+    - "vaccine product"
+    - "vaccine manufacturer"
+    - "dose number"
+    - "dose sequence"
+    - "lot number"
+    - "route of administration"
+    - "booster"
+    - "co-administration"
+    - "concomitant vaccine"
+    - "antiviral treatment"
+    - "immunosuppressive therapy"
+
+ambiguity_hotspots:
+  - concept: primary_endpoint
+    severity: high
+    warning: >
+      Vaccine effectiveness endpoints vary — lab-confirmed infection vs
+      medically attended illness vs hospitalization vs death. Confirm the
+      case definition and required confirmation (PCR, antigen, clinical).
+      Check if VE is measured as 1-RR, 1-OR, or 1-HR.
+
+  - concept: index_date
+    severity: high
+    warning: >
+      Multi-dose vaccine schedules complicate index date — confirm whether
+      index is dose 1, dose 2, or last dose. Check risk window start
+      (e.g., 14 days post-vaccination for immune response onset).
+
+  - concept: eligibility_inclusion
+    severity: medium
+    warning: >
+      Vaccine study populations differ significantly — confirm age cutoffs,
+      immunocompromised inclusion/exclusion, prior infection history
+      requirements, and whether healthcare workers are included or analyzed
+      separately.
+
+  - concept: clinical_characteristics
+    severity: medium
+    warning: >
+      Prior vaccination and infection history definitions vary. Confirm
+      lookback window for prior doses and how hybrid immunity
+      (prior infection + vaccination) is handled.
+
+expected_concepts:
+  - index_date
+  - follow_up_start
+  - follow_up_end
+  - censoring_rules
+  - enrollment_window
+  - baseline_window
+  - primary_endpoint
+  - secondary_endpoint
+  - eligibility_inclusion
+  - eligibility_exclusion
+  - data_source
+  - demographics
+  - clinical_characteristics
+  - biomarkers
+  - lab_variables
+  - treatment_variables
+
+section_priority:
+  index_date:
+    - "Study Design"
+    - "Vaccination"
+    - "Exposure Definition"
+    - "Cohort Entry"
+  primary_endpoint:
+    - "Endpoints"
+    - "Outcome Definitions"
+    - "Case Definition"
+    - "Vaccine Effectiveness"
+    - "Safety Outcomes"
+  demographics:
+    - "Demographics"
+    - "Baseline Characteristics"
+    - "Study Population"
+  clinical_characteristics:
+    - "Clinical Characteristics"
+    - "Baseline Characteristics"
+    - "Medical History"
+    - "Vaccination History"
+    - "Risk Factors"
+  biomarkers:
+    - "Immunogenicity"
+    - "Serology"
+    - "Antibody Response"
+    - "Laboratory"
+  lab_variables:
+    - "Laboratory"
+    - "Case Confirmation"
+    - "Virology"
+  treatment_variables:
+    - "Vaccination"
+    - "Vaccine Products"
+    - "Co-administration"
+    - "Concomitant Medications"

@@ -41,28 +41,6 @@ concept_synonyms:
     - "loss to follow-up"
     - "end of enrollment"
 
-ambiguity_hotspots:
-  - concept: index_date
-    severity: high
-    warning: >
-      CV protocols often allow multiple qualifying events (MI, ACS, HF hospitalization).
-      Confirm whether first event only or most recent event defines index date.
-      Confirm whether inpatient vs outpatient diagnosis codes both qualify.
-
-  - concept: primary_endpoint
-    severity: high
-    warning: >
-      MACE definitions vary by study — always confirm component events.
-      Common variants: 3-point MACE (CV death, MI, stroke) vs 4-point vs expanded.
-      Check appendix for ICD code lists for each component.
-
-  - concept: censoring_rules
-    severity: medium
-    warning: >
-      Competing risk handling varies. Confirm whether death is a competing event
-      or censoring event for non-fatal outcomes. Check if cause-specific or
-      subdistribution hazard model is specified.
-
   demographics:
     - "age"
     - "sex"
@@ -133,6 +111,28 @@ ambiguity_hotspots:
     - "medication adherence"
     - "PDC"
     - "proportion of days covered"
+
+ambiguity_hotspots:
+  - concept: index_date
+    severity: high
+    warning: >
+      CV protocols often allow multiple qualifying events (MI, ACS, HF hospitalization).
+      Confirm whether first event only or most recent event defines index date.
+      Confirm whether inpatient vs outpatient diagnosis codes both qualify.
+
+  - concept: primary_endpoint
+    severity: high
+    warning: >
+      MACE definitions vary by study — always confirm component events.
+      Common variants: 3-point MACE (CV death, MI, stroke) vs 4-point vs expanded.
+      Check appendix for ICD code lists for each component.
+
+  - concept: censoring_rules
+    severity: medium
+    warning: >
+      Competing risk handling varies. Confirm whether death is a competing event
+      or censoring event for non-fatal outcomes. Check if cause-specific or
+      subdistribution hazard model is specified.
 
 expected_concepts:
   - index_date

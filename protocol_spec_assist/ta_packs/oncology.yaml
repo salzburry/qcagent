@@ -58,35 +58,6 @@ concept_synonyms:
     - "administrative censoring"
     - "end of data availability"
 
-ambiguity_hotspots:
-  - concept: index_date
-    severity: high
-    warning: >
-      Oncology protocols frequently conflict between diagnosis date and treatment
-      initiation. Check Section 3 (design) AND Section 5 (eligibility) AND
-      Appendix for drug list. Line-of-therapy definitions may differ across sections.
-
-  - concept: follow_up_end
-    severity: high
-    warning: >
-      Multiple competing censoring rules common in oncology — MACE event,
-      death, data cutoff, end of enrollment, disenrollment. Verify all rules
-      are captured and whether they apply to all endpoints or only primary.
-
-  - concept: eligibility_inclusion
-    severity: medium
-    warning: >
-      Prior treatment requirements and washout periods in oncology are often
-      buried in appendix drug lists or footnotes to eligibility tables.
-      Always check appendices before finalizing I/E criteria.
-
-  - concept: primary_endpoint
-    severity: medium
-    warning: >
-      Oncology endpoints often have composite definitions (OS, PFS, TTP).
-      Ensure time-zero anchor matches index date definition.
-      Check estimand framework section if present.
-
   demographics:
     - "age"
     - "sex"
@@ -166,6 +137,35 @@ ambiguity_hotspots:
     - "R-CHOP"
     - "CAR-T"
     - "stem cell transplant"
+
+ambiguity_hotspots:
+  - concept: index_date
+    severity: high
+    warning: >
+      Oncology protocols frequently conflict between diagnosis date and treatment
+      initiation. Check Section 3 (design) AND Section 5 (eligibility) AND
+      Appendix for drug list. Line-of-therapy definitions may differ across sections.
+
+  - concept: follow_up_end
+    severity: high
+    warning: >
+      Multiple competing censoring rules common in oncology — MACE event,
+      death, data cutoff, end of enrollment, disenrollment. Verify all rules
+      are captured and whether they apply to all endpoints or only primary.
+
+  - concept: eligibility_inclusion
+    severity: medium
+    warning: >
+      Prior treatment requirements and washout periods in oncology are often
+      buried in appendix drug lists or footnotes to eligibility tables.
+      Always check appendices before finalizing I/E criteria.
+
+  - concept: primary_endpoint
+    severity: medium
+    warning: >
+      Oncology endpoints often have composite definitions (OS, PFS, TTP).
+      Ensure time-zero anchor matches index date definition.
+      Check estimand framework section if present.
 
 expected_concepts:
   - index_date

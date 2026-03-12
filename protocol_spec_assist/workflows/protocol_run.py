@@ -37,6 +37,7 @@ from ..concepts.clinical_characteristics import find_clinical_characteristics
 from ..concepts.biomarkers import find_biomarkers
 from ..concepts.lab_variables import find_lab_variables
 from ..concepts.treatment_variables import find_treatment_variables
+from ..data_sources.registry import detect_source
 from ..schemas.evidence import EvidencePack
 from ..qc.rules import run_all_qc, summarize_qc
 from ..spec_output.spec_schema import build_program_spec
@@ -74,9 +75,10 @@ def _run_concept_finder(
     index: ProtocolIndex,
     client: LocalModelClient,
     ta_pack,
+    **kwargs,
 ) -> dict:
     """Run a concept finder and return serialized EvidencePack."""
-    pack = finder_fn(protocol_id, index, client, ta_pack)
+    pack = finder_fn(protocol_id, index, client, ta_pack, **kwargs)
     return pack.model_dump()
 
 
@@ -116,28 +118,28 @@ def task_find_censoring_rules(pid, index, client, ta_pack) -> dict:
 
 
 @task(name="find-demographics")
-def task_find_demographics(pid, index, client, ta_pack) -> dict:
-    return _run_concept_finder(find_demographics, pid, index, client, ta_pack)
+def task_find_demographics(pid, index, client, ta_pack, data_source="generic") -> dict:
+    return _run_concept_finder(find_demographics, pid, index, client, ta_pack, data_source=data_source)
 
 
 @task(name="find-clinical-characteristics")
-def task_find_clinical_characteristics(pid, index, client, ta_pack) -> dict:
-    return _run_concept_finder(find_clinical_characteristics, pid, index, client, ta_pack)
+def task_find_clinical_characteristics(pid, index, client, ta_pack, data_source="generic") -> dict:
+    return _run_concept_finder(find_clinical_characteristics, pid, index, client, ta_pack, data_source=data_source)
 
 
 @task(name="find-biomarkers")
-def task_find_biomarkers(pid, index, client, ta_pack) -> dict:
-    return _run_concept_finder(find_biomarkers, pid, index, client, ta_pack)
+def task_find_biomarkers(pid, index, client, ta_pack, data_source="generic") -> dict:
+    return _run_concept_finder(find_biomarkers, pid, index, client, ta_pack, data_source=data_source)
 
 
 @task(name="find-lab-variables")
-def task_find_lab_variables(pid, index, client, ta_pack) -> dict:
-    return _run_concept_finder(find_lab_variables, pid, index, client, ta_pack)
+def task_find_lab_variables(pid, index, client, ta_pack, data_source="generic") -> dict:
+    return _run_concept_finder(find_lab_variables, pid, index, client, ta_pack, data_source=data_source)
 
 
 @task(name="find-treatment-variables")
-def task_find_treatment_variables(pid, index, client, ta_pack) -> dict:
-    return _run_concept_finder(find_treatment_variables, pid, index, client, ta_pack)
+def task_find_treatment_variables(pid, index, client, ta_pack, data_source="generic") -> dict:
+    return _run_concept_finder(find_treatment_variables, pid, index, client, ta_pack, data_source=data_source)
 
 
 @task(name="run-qc")
@@ -274,11 +276,17 @@ def protocol_run(
     exclusion_pack = task_find_exclusion_criteria(pid, index, client, ta_pack)
     study_period_pack = task_find_study_period(pid, index, client, ta_pack)
     censoring_rules_pack = task_find_censoring_rules(pid, index, client, ta_pack)
-    demographics_pack = task_find_demographics(pid, index, client, ta_pack)
-    clinical_chars_pack = task_find_clinical_characteristics(pid, index, client, ta_pack)
-    biomarkers_pack = task_find_biomarkers(pid, index, client, ta_pack)
-    lab_variables_pack = task_find_lab_variables(pid, index, client, ta_pack)
-    treatment_vars_pack = task_find_treatment_variables(pid, index, client, ta_pack)
+
+    # Step 3b: Detect data source from study_period extraction for source-specific definitions
+    sp_meta = study_period_pack.get("concept_metadata") or {}
+    detected_source = detect_source(sp_meta.get("data_source", ""))
+    logger.info(f"Detected data source: {detected_source}")
+
+    demographics_pack = task_find_demographics(pid, index, client, ta_pack, detected_source)
+    clinical_chars_pack = task_find_clinical_characteristics(pid, index, client, ta_pack, detected_source)
+    biomarkers_pack = task_find_biomarkers(pid, index, client, ta_pack, detected_source)
+    lab_variables_pack = task_find_lab_variables(pid, index, client, ta_pack, detected_source)
+    treatment_vars_pack = task_find_treatment_variables(pid, index, client, ta_pack, detected_source)
 
     packs = {
         "index_date": index_date_pack,

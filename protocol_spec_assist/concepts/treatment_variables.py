@@ -16,6 +16,7 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
+from ..data_sources.registry import resolve_static_template
 
 CONCEPT = "treatment_variables"
 FINDER_VERSION = "0.3.0"
@@ -154,11 +155,12 @@ def _merge_with_static_template(extraction_variables, static_template):
     return merged
 
 
-def _build_static_only_pack(protocol_id: str) -> EvidencePack:
+def _build_static_only_pack(protocol_id: str, data_source: str = "generic") -> EvidencePack:
     """Build an EvidencePack from static template alone."""
+    resolved = resolve_static_template(STATIC_TEMPLATE, data_source, CONCEPT)
     candidates = []
     per_candidate_meta = {}
-    for tmpl in STATIC_TEMPLATE:
+    for tmpl in resolved:
         candidate_id = hashlib.sha256(
             f"{protocol_id}:{CONCEPT}:static:{tmpl['variable_name']}:{tmpl['definition']}".encode()
         ).hexdigest()[:12]
@@ -190,6 +192,7 @@ def find_treatment_variables(
     index: ProtocolIndex,
     client: LocalModelClient,
     ta_pack: Optional[TAPack] = None,
+    data_source: str = "generic",
 ) -> EvidencePack:
     """Run the treatment variables concept finder workflow."""
 
@@ -208,7 +211,7 @@ def find_treatment_variables(
     )
 
     if not chunks:
-        return _build_static_only_pack(protocol_id)
+        return _build_static_only_pack(protocol_id, data_source)
 
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT)
     user_prompt = _build_user_prompt(chunks, ta_warning, protocol_id)
@@ -234,7 +237,8 @@ def find_treatment_variables(
             pass
 
     # Merge with static template
-    merged_variables = _merge_with_static_template(extraction.variables, STATIC_TEMPLATE)
+    resolved_template = resolve_static_template(STATIC_TEMPLATE, data_source, CONCEPT)
+    merged_variables = _merge_with_static_template(extraction.variables, resolved_template)
 
     chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
     candidates = []
