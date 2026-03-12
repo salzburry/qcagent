@@ -68,9 +68,11 @@ def test_chunk_id_different_position_same_content():
 
 
 def test_chunk_id_none_page():
-    """None page should be handled gracefully."""
+    """None page should be handled gracefully and produce a valid UUID."""
+    import uuid
     cid = _deterministic_chunk_id("P001", "text", page=None)
-    assert len(cid) == 16
+    assert len(cid) == 36  # UUID string format: 8-4-4-4-12
+    uuid.UUID(cid)  # raises ValueError if invalid
 
 
 # ── Fix 5: Table headings preserve parent context ───────────────────────────

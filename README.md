@@ -87,6 +87,7 @@ Oncology and CV packs included. Add more as needed.
 
 **Adjudicator routing.** Low confidence → larger model on separate endpoint for second pass.
 Qwen3-8B default (port 8000), Qwen3-30B-A3B adjudicator (port 8001). Same interface, different model.
+If the adjudicator is unavailable, the first-pass result is kept (graceful fallback).
 
 **Model-agnostic client.** LocalModelClient uses OpenAI-compatible interface.
 Swap to GPT-4o = change env vars, zero code changes.
@@ -168,8 +169,8 @@ requirements.txt                # Pinned dependencies
 pip install -e .
 
 # 2. Download models (one-time, ~20GB total)
-huggingface-cli download Qwen/Qwen3-8B-Instruct
-huggingface-cli download Qwen/Qwen3-30B-A3B-Instruct  # adjudicator
+huggingface-cli download Qwen/Qwen3-8B
+huggingface-cli download Qwen/Qwen3-30B-A3B-Instruct-2507  # adjudicator
 huggingface-cli download BAAI/bge-m3
 huggingface-cli download BAAI/bge-reranker-v2-m3
 
@@ -178,13 +179,13 @@ docling-tools models download
 
 # 4. Start vLLM servers
 # Default model (port 8000):
-vllm serve Qwen/Qwen3-8B-Instruct \
+vllm serve Qwen/Qwen3-8B \
     --host 0.0.0.0 --port 8000 \
     --max-model-len 32768 \
     --enable-prefix-caching
 
 # Adjudicator model (port 8001):
-vllm serve Qwen/Qwen3-30B-A3B-Instruct \
+vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
     --host 0.0.0.0 --port 8001 \
     --max-model-len 32768 \
     --enable-prefix-caching
@@ -230,10 +231,10 @@ Build eval harness first. Run on 5 protocols. Fix retrieval before fixing prompt
 
 ```bash
 VLLM_BASE_URL=http://localhost:8000/v1         # Default model server
-ADJUDICATOR_BASE_URL=http://localhost:8001/v1   # Adjudicator model server
+ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same as default for single-model setup
 VLLM_API_KEY=local                              # API key (default: local)
-DEFAULT_MODEL=Qwen/Qwen3-8B-Instruct           # Main extractor
-ADJUDICATOR_MODEL=Qwen/Qwen3-30B-A3B-Instruct  # Hard cases
+DEFAULT_MODEL=Qwen/Qwen3-8B                    # Main extractor
+ADJUDICATOR_MODEL=Qwen/Qwen3-8B               # Same model for first run (or Qwen/Qwen3-30B-A3B-Instruct-2507 for dual setup)
 ```
 
 ---

@@ -1,6 +1,6 @@
 """
 Prefect workflow — protocol_run.
-Fixed path: ingest → index → find concepts → QC → pause for review → write workbook.
+Fixed path: ingest → index → find concepts → QC → auto-translate to spec → save outputs.
 Workflow, not agent. Every step is predetermined.
 """
 
@@ -30,8 +30,13 @@ from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import load_ta_pack
 from ..concepts.index_date import find_index_date
 from ..concepts.endpoints import find_follow_up_end, find_primary_endpoint
+from ..concepts.eligibility import find_inclusion_criteria, find_exclusion_criteria
+from ..concepts.study_design import find_study_period, find_censoring_rules
 from ..schemas.evidence import EvidencePack
-from ..qc.rules import run_all_qc, summarize_qc
+from ..qc.rules import run_all_qc, summarize_qc, IMPLEMENTED_CONCEPTS
+from ..spec_output.spec_schema import build_program_spec
+from ..spec_output.html_renderer import save_html
+from ..spec_output.excel_writer import save_excel
 
 
 # ── Tasks (each is a named, retriable step) ───────────────────────────────────
@@ -56,43 +61,48 @@ def task_index_protocol(
     return index_dir
 
 
-@task(name="find-index-date")
-def task_find_index_date(
-    protocol_id: str,
-    index_dir: str,
-    ta_name: Optional[str],
-) -> dict:
+def _run_concept_finder(finder_fn, protocol_id, index_dir, ta_name):
+    """Helper to run a concept finder with fresh client/index instances."""
     index = ProtocolIndex(index_dir=index_dir)
     client = LocalModelClient()
     ta_pack = load_ta_pack(ta_name) if ta_name else None
-    pack = find_index_date(protocol_id, index, client, ta_pack)
+    pack = finder_fn(protocol_id, index, client, ta_pack)
     return pack.model_dump()
+
+
+@task(name="find-index-date")
+def task_find_index_date(protocol_id: str, index_dir: str, ta_name: Optional[str]) -> dict:
+    return _run_concept_finder(find_index_date, protocol_id, index_dir, ta_name)
 
 
 @task(name="find-follow-up-end")
-def task_find_follow_up_end(
-    protocol_id: str,
-    index_dir: str,
-    ta_name: Optional[str],
-) -> dict:
-    index = ProtocolIndex(index_dir=index_dir)
-    client = LocalModelClient()
-    ta_pack = load_ta_pack(ta_name) if ta_name else None
-    pack = find_follow_up_end(protocol_id, index, client, ta_pack)
-    return pack.model_dump()
+def task_find_follow_up_end(protocol_id: str, index_dir: str, ta_name: Optional[str]) -> dict:
+    return _run_concept_finder(find_follow_up_end, protocol_id, index_dir, ta_name)
 
 
 @task(name="find-primary-endpoint")
-def task_find_primary_endpoint(
-    protocol_id: str,
-    index_dir: str,
-    ta_name: Optional[str],
-) -> dict:
-    index = ProtocolIndex(index_dir=index_dir)
-    client = LocalModelClient()
-    ta_pack = load_ta_pack(ta_name) if ta_name else None
-    pack = find_primary_endpoint(protocol_id, index, client, ta_pack)
-    return pack.model_dump()
+def task_find_primary_endpoint(protocol_id: str, index_dir: str, ta_name: Optional[str]) -> dict:
+    return _run_concept_finder(find_primary_endpoint, protocol_id, index_dir, ta_name)
+
+
+@task(name="find-inclusion-criteria")
+def task_find_inclusion_criteria(protocol_id: str, index_dir: str, ta_name: Optional[str]) -> dict:
+    return _run_concept_finder(find_inclusion_criteria, protocol_id, index_dir, ta_name)
+
+
+@task(name="find-exclusion-criteria")
+def task_find_exclusion_criteria(protocol_id: str, index_dir: str, ta_name: Optional[str]) -> dict:
+    return _run_concept_finder(find_exclusion_criteria, protocol_id, index_dir, ta_name)
+
+
+@task(name="find-study-period")
+def task_find_study_period(protocol_id: str, index_dir: str, ta_name: Optional[str]) -> dict:
+    return _run_concept_finder(find_study_period, protocol_id, index_dir, ta_name)
+
+
+@task(name="find-censoring-rules")
+def task_find_censoring_rules(protocol_id: str, index_dir: str, ta_name: Optional[str]) -> dict:
+    return _run_concept_finder(find_censoring_rules, protocol_id, index_dir, ta_name)
 
 
 @task(name="run-qc")
@@ -131,6 +141,32 @@ def task_save_packs(
     return str(out_path)
 
 
+@task(name="generate-spec-outputs")
+def task_generate_spec(
+    packs_dict: dict[str, dict],
+    output_dir: str,
+    protocol_id: str,
+    protocol_title: Optional[str] = None,
+) -> dict:
+    """Auto-translate evidence packs → program spec → HTML + Excel."""
+    spec = build_program_spec(protocol_id, packs_dict, protocol_title)
+
+    out_dir = Path(output_dir)
+    html_path = save_html(spec, str(out_dir / f"{protocol_id}_spec.html"))
+    excel_path = save_excel(spec, str(out_dir / f"{protocol_id}_spec.xlsx"))
+
+    # Also save spec JSON
+    spec_json_path = out_dir / f"{protocol_id}_spec.json"
+    with open(spec_json_path, "w") as f:
+        json.dump(spec.model_dump(), f, indent=2, default=str)
+
+    return {
+        "html_path": html_path,
+        "excel_path": excel_path,
+        "json_path": str(spec_json_path),
+    }
+
+
 # ── Main flow ─────────────────────────────────────────────────────────────────
 
 @flow(name="protocol-spec-run", log_prints=True)
@@ -143,10 +179,18 @@ def protocol_run(
     skip_indexing: bool = False,
 ):
     """
-    Main workflow: protocol PDF → evidence packs → QC → saved output.
+    Main workflow: protocol PDF → evidence packs → QC → program spec.
 
-    Phase 1 concepts: index_date, follow_up_end, primary_endpoint.
-    Human review happens after this flow completes — via UI.
+    Concepts extracted:
+      - index_date, follow_up_end, primary_endpoint  (Phase 1)
+      - eligibility_inclusion, eligibility_exclusion  (Phase 1.5)
+      - study_period, censoring_rules                 (Phase 1.5)
+
+    Outputs:
+      - evidence_packs.json     — raw extraction results
+      - _spec.html              — HTML preview for review
+      - _spec.xlsx              — Excel program spec draft
+      - _spec.json              — structured spec as JSON
     """
     logger = get_run_logger()
     pid = protocol_id or Path(pdf_path).stem
@@ -172,27 +216,36 @@ def protocol_run(
     else:
         logger.info("Skipping indexing — using existing index.")
 
-    # Step 3: Find concepts (run sequentially in Phase 1, parallel in Phase 2+)
-    index_date_pack = task_find_index_date(pid, index_dir, ta_name)
-    follow_up_end_pack = task_find_follow_up_end(pid, index_dir, ta_name)
-    primary_endpoint_pack = task_find_primary_endpoint(pid, index_dir, ta_name)
+    # Step 3: Find concepts — all 7 finders run sequentially
+    packs = {}
 
-    packs = {
-        "index_date": index_date_pack,
-        "follow_up_end": follow_up_end_pack,
-        "primary_endpoint": primary_endpoint_pack,
-    }
+    packs["index_date"] = task_find_index_date(pid, index_dir, ta_name)
+    packs["follow_up_end"] = task_find_follow_up_end(pid, index_dir, ta_name)
+    packs["primary_endpoint"] = task_find_primary_endpoint(pid, index_dir, ta_name)
+    packs["eligibility_inclusion"] = task_find_inclusion_criteria(pid, index_dir, ta_name)
+    packs["eligibility_exclusion"] = task_find_exclusion_criteria(pid, index_dir, ta_name)
+    packs["study_period"] = task_find_study_period(pid, index_dir, ta_name)
+    packs["censoring_rules"] = task_find_censoring_rules(pid, index_dir, ta_name)
 
     # Step 4: Pre-review QC
     ta_pack = load_ta_pack(ta_name) if ta_name else None
     expected = ta_pack.expected_concepts if ta_pack else None
     qc_results = task_run_qc(packs, expected)
 
-    # Step 5: Save for review
+    # Step 5: Save evidence packs
     output_path = task_save_packs(packs, qc_results, output_dir, pid)
 
-    logger.info(f"Run complete. Evidence packs at: {output_path}")
-    logger.info("Next step: open review UI to select governing evidence per concept.")
+    # Step 6: Auto-translate to program spec (HTML + Excel + JSON)
+    spec_paths = task_generate_spec(
+        packs, output_dir, pid,
+        protocol_title=parse_result.get("title"),
+    )
+
+    logger.info(f"Run complete.")
+    logger.info(f"  Evidence packs: {output_path}")
+    logger.info(f"  HTML spec:      {spec_paths['html_path']}")
+    logger.info(f"  Excel spec:     {spec_paths['excel_path']}")
+    logger.info("Next step: review the HTML/Excel spec and correct as needed.")
 
     return output_path
 
@@ -202,7 +255,7 @@ def protocol_run(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Protocol Spec Assist — Evidence Extraction")
+    parser = argparse.ArgumentParser(description="Protocol Spec Assist — Evidence Extraction + Spec Generation")
     parser.add_argument("pdf", help="Protocol PDF path")
     parser.add_argument("--protocol-id", help="Protocol identifier (default: filename)")
     parser.add_argument("--ta", help="Therapeutic area: oncology | cardiovascular")

@@ -103,14 +103,17 @@ def find_follow_up_end(
 
     used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        result = client.extract(
-            system_prompt=SYSTEM_PROMPT_FUE,
-            user_prompt=context,
-            schema=FollowUpEndExtraction,
-            use_adjudicator=True,
-        )
-        extraction, model_used = result.parsed, result.model_used
-        used_adjudicator = True
+        try:
+            result = client.extract(
+                system_prompt=SYSTEM_PROMPT_FUE,
+                user_prompt=context,
+                schema=FollowUpEndExtraction,
+                use_adjudicator=True,
+            )
+            extraction, model_used = result.parsed, result.model_used
+            used_adjudicator = True
+        except Exception as e:
+            print(f"[FollowUpEndFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
 
     # Build pack first to get stable candidate_ids, then attach metadata
     pack = _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used, used_adjudicator)
@@ -215,14 +218,17 @@ def find_primary_endpoint(
 
     used_adjudicator = False
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        result = client.extract(
-            system_prompt=SYSTEM_PROMPT_PE,
-            user_prompt=context,
-            schema=PrimaryEndpointExtraction,
-            use_adjudicator=True,
-        )
-        extraction, model_used = result.parsed, result.model_used
-        used_adjudicator = True
+        try:
+            result = client.extract(
+                system_prompt=SYSTEM_PROMPT_PE,
+                user_prompt=context,
+                schema=PrimaryEndpointExtraction,
+                use_adjudicator=True,
+            )
+            extraction, model_used = result.parsed, result.model_used
+            used_adjudicator = True
+        except Exception as e:
+            print(f"[PrimaryEndpointFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
 
     # Build pack first to get stable candidate_ids, then attach metadata
     pack = _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used, used_adjudicator)

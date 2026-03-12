@@ -1,4 +1,6 @@
 """Tests for deterministic chunk ID generation."""
+import uuid
+
 from protocol_spec_assist.ingest.parse_protocol import _deterministic_chunk_id
 
 
@@ -34,7 +36,22 @@ def test_different_source_type_different_id():
     assert a != b
 
 
-def test_id_is_16_chars():
+def test_id_is_valid_uuid():
+    """chunk_id must be a valid UUID string — required by Qdrant for point IDs."""
     cid = _deterministic_chunk_id("P001", "text")
-    assert len(cid) == 16
-    assert cid.isalnum()
+    parsed = uuid.UUID(cid)  # raises ValueError if invalid
+    assert str(parsed) == cid
+
+
+def test_id_is_valid_uuid_various_inputs():
+    """Multiple inputs all produce valid UUIDs."""
+    inputs = [
+        ("P001", "hello world", "Section 1", 1, "narrative", 0),
+        ("P002", "table data", "Appendix A", 42, "table", 3),
+        ("P003", "", "", None, "", 0),
+    ]
+    for pid, text, heading, page, stype, pos in inputs:
+        cid = _deterministic_chunk_id(pid, text, heading=heading, page=page,
+                                       source_type=stype, position=pos)
+        parsed = uuid.UUID(cid)
+        assert str(parsed) == cid
