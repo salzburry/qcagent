@@ -52,6 +52,6 @@ numpy>=1.24
 #        --dtype auto
 #
 # 4. Laptop alternative (if vLLM too heavy):
-#    ollama pull qwen2.5:14b
+#    ollama pull qwen3:8b
 #    Set env: VLLM_BASE_URL=http://localhost:11434/v1
 #    Note: structured outputs less reliable with Ollama

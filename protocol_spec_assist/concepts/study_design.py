@@ -1,5 +1,5 @@
 """
-Follow-up end and primary endpoint concept finders.
+Study design concept finders: study_period and censoring_rules.
 Same fixed workflow pattern as index_date.py.
 """
 
@@ -19,48 +19,67 @@ CONFIDENCE_THRESHOLD = 0.65
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Follow-up End
+# Study Period / Data Source
 # ══════════════════════════════════════════════════════════════════════════════
 
-CONCEPT_FUE = "follow_up_end"
+CONCEPT_SP = "study_period"
 
-class FollowUpEndExtraction(BaseModel):
+
+class StudyPeriodExtraction(BaseModel):
     class CandidateExtraction(BaseModel):
         chunk_id: Optional[str] = None
         quoted_text: str
-        summary: Optional[str] = None
         section_title: str
         sponsor_term: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        rule_type: str = Field(
-            description="date_based | event_based | data_cutoff | enrollment_end | composite"
-        )
         reasoning: str
 
     candidates: list[CandidateExtraction]
+
+    # Study-level fields (not per-candidate)
+    study_period_start: Optional[str] = Field(
+        default=None, description="Start date or description of study period"
+    )
+    study_period_end: Optional[str] = Field(
+        default=None, description="End date or description of study period"
+    )
+    data_source: Optional[str] = Field(
+        default=None, description="Database/data source name (e.g. Optum, CPRD, MarketScan)"
+    )
+    data_source_version: Optional[str] = Field(
+        default=None, description="Data source version or cut date"
+    )
+    design_type: Optional[str] = Field(
+        default=None,
+        description="retrospective_cohort | prospective_cohort | case_control | cross_sectional | other"
+    )
+
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(ge=0.0, le=1.0)
 
 
-SYSTEM_PROMPT_FUE = """You are an expert RWE protocol analyst.
-Extract the follow-up end definition — when observation of a patient stops.
+SYSTEM_PROMPT_SP = """You are an expert RWE protocol analyst.
+Extract the study period, data source, and study design type from the protocol text.
 
-This may be: a fixed date, end of continuous enrollment, death, data cutoff,
-disenrollment, loss to follow-up, or a composite of multiple rules.
+Look for:
+- Study period dates (start/end)
+- Data source name (e.g. Optum CDM, CPRD GOLD, MarketScan, Flatiron)
+- Data source version or data cut date
+- Study design type (retrospective cohort, prospective cohort, case-control, etc.)
 
 Rules:
-- Identify ALL follow-up end conditions — there are often multiple.
-- Distinguish date-based vs event-based vs data cutoff rules.
-- If different sections give different rules, flag as contradiction.
-- Mark inferred definitions clearly.
+- Extract ALL passages that define the study period or data source.
+- Capture exact date ranges if stated.
+- Identify the database/data source by name.
+- If design type is explicitly stated, capture it. Otherwise mark as inferred.
 - IMPORTANT: Return the chunk_id from each chunk header for provenance.
 - Return the exact quoted_text from the protocol, not a paraphrase.
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
-def find_follow_up_end(
+def find_study_period(
     protocol_id: str,
     index: ProtocolIndex,
     client: LocalModelClient,
@@ -68,11 +87,11 @@ def find_follow_up_end(
 ) -> EvidencePack:
 
     queries = build_query_bank(
-        "follow-up end censoring data cutoff end of observation enrollment end",
-        ta_pack, CONCEPT_FUE,
+        "study period data source database study dates retrospective cohort design",
+        ta_pack, CONCEPT_SP,
     )
 
-    priority_sections = get_section_priority(ta_pack, CONCEPT_FUE)
+    priority_sections = get_section_priority(ta_pack, CONCEPT_SP)
     chunks = index.search(
         query=queries[0],
         protocol_id=protocol_id,
@@ -85,19 +104,20 @@ def find_follow_up_end(
 
     if not chunks:
         return EvidencePack(
-            protocol_id=protocol_id, concept=CONCEPT_FUE,
+            protocol_id=protocol_id, concept=CONCEPT_SP,
             candidates=[], low_retrieval_signal=True,
             finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
         )
 
-    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_FUE)
+    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_SP)
     context = _build_context(chunks, ta_warning, protocol_id)
 
     result = client.extract(
-        system_prompt=SYSTEM_PROMPT_FUE,
+        system_prompt=SYSTEM_PROMPT_SP,
         user_prompt=context,
-        schema=FollowUpEndExtraction,
+        schema=StudyPeriodExtraction,
         use_adjudicator=False,
+        prompt_version=PROMPT_VERSION,
     )
     extraction, model_used = result.parsed, result.model_used
 
@@ -105,77 +125,92 @@ def find_follow_up_end(
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
         try:
             result = client.extract(
-                system_prompt=SYSTEM_PROMPT_FUE,
+                system_prompt=SYSTEM_PROMPT_SP,
                 user_prompt=context,
-                schema=FollowUpEndExtraction,
+                schema=StudyPeriodExtraction,
                 use_adjudicator=True,
+                prompt_version=PROMPT_VERSION,
             )
             extraction, model_used = result.parsed, result.model_used
             used_adjudicator = True
         except Exception as e:
-            print(f"[FollowUpEndFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+            print(f"[StudyPeriodFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
 
-    # Build pack first to get stable candidate_ids, then attach metadata
-    pack = _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used, used_adjudicator)
+    pack = _build_pack(CONCEPT_SP, protocol_id, extraction, chunks, model_used, used_adjudicator)
 
-    # Attach concept-specific metadata keyed by candidate_id (not order-dependent)
-    candidate_metadata = {}
-    for ec, candidate in zip(extraction.candidates, pack.candidates):
-        candidate_metadata[candidate.candidate_id] = {
-            "rule_type": ec.rule_type,
-        }
-    pack.concept_metadata = {"per_candidate": candidate_metadata}
+    # Study-level metadata (not per-candidate)
+    pack.concept_metadata = {
+        "study_period_start": extraction.study_period_start,
+        "study_period_end": extraction.study_period_end,
+        "data_source": extraction.data_source,
+        "data_source_version": extraction.data_source_version,
+        "design_type": extraction.design_type,
+    }
+
+    print(f"[StudyPeriodFinder] Done. "
+          f"{len(pack.candidates)} candidates | "
+          f"confidence={extraction.overall_confidence:.2f} | "
+          f"data_source={extraction.data_source or 'not found'}")
 
     return pack
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Primary Endpoint
+# Censoring Rules
 # ══════════════════════════════════════════════════════════════════════════════
 
-CONCEPT_PE = "primary_endpoint"
+CONCEPT_CR = "censoring_rules"
 
-class PrimaryEndpointExtraction(BaseModel):
-    class CandidateExtraction(BaseModel):
+
+class CensoringRulesExtraction(BaseModel):
+    class RuleExtraction(BaseModel):
         chunk_id: Optional[str] = None
         quoted_text: str
-        summary: Optional[str] = None
+        rule_label: str = Field(description="Short label, e.g. 'Death censoring'")
+        rule_type: str = Field(
+            description="event_based | date_based | administrative | competing_risk | composite"
+        )
+        applies_to: Optional[str] = Field(
+            default=None,
+            description="Which endpoint(s) this rule applies to, e.g. 'primary endpoint' or 'all'"
+        )
         section_title: str
         sponsor_term: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        is_composite: bool = Field(description="True if endpoint is composite of multiple events")
-        components: list[str] = Field(
-            default_factory=list,
-            description="Component events if composite (e.g. ['CV death', 'MI', 'stroke'])"
-        )
-        time_to_event: bool = Field(description="True if time-to-event outcome")
         reasoning: str
 
-    candidates: list[CandidateExtraction]
+    rules: list[RuleExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(ge=0.0, le=1.0)
 
 
-SYSTEM_PROMPT_PE = """You are an expert RWE protocol analyst.
-Extract the primary endpoint definition from protocol text.
+SYSTEM_PROMPT_CR = """You are an expert RWE protocol analyst.
+Extract ALL censoring rules from the protocol text.
 
-Look for: primary outcome, primary objective, main endpoint, key endpoint.
-For composite endpoints, list all component events.
-For time-to-event endpoints, note the event definition and time-zero.
+Censoring rules define when a patient's observation ends for reasons other than
+the primary event. They may include:
+- Death (if not the primary endpoint)
+- End of enrollment / disenrollment
+- Data cutoff / end of data availability
+- Loss to follow-up
+- Competing events (for cause-specific analyses)
+- Administrative censoring at a fixed date
+- Treatment switching / discontinuation
 
 Rules:
-- Distinguish primary from secondary endpoints explicitly.
-- For MACE or composite endpoints, capture all components.
-- Note whether time-to-event or binary/rate outcome.
-- If endpoint definition appears in multiple sections with differences, flag contradiction.
+- Extract EVERY distinct censoring rule.
+- Classify each: event_based, date_based, administrative, competing_risk, composite.
+- Note which endpoint(s) each rule applies to if specified.
+- If censoring rules differ across endpoints, capture all variations.
+- If sections contradict, set contradictions_found=true.
 - IMPORTANT: Return the chunk_id from each chunk header for provenance.
 - Return the exact quoted_text from the protocol, not a paraphrase.
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
-def find_primary_endpoint(
+def find_censoring_rules(
     protocol_id: str,
     index: ProtocolIndex,
     client: LocalModelClient,
@@ -183,36 +218,37 @@ def find_primary_endpoint(
 ) -> EvidencePack:
 
     queries = build_query_bank(
-        "primary endpoint primary outcome primary objective key endpoint",
-        ta_pack, CONCEPT_PE,
+        "censoring rules censored competing event loss to follow-up administrative censoring",
+        ta_pack, CONCEPT_CR,
     )
 
-    priority_sections = get_section_priority(ta_pack, CONCEPT_PE)
+    priority_sections = get_section_priority(ta_pack, CONCEPT_CR)
     chunks = index.search(
         query=queries[0],
         protocol_id=protocol_id,
         concept_queries=queries[1:],
-        top_k_retrieve=20,
-        top_k_rerank=8,
+        top_k_retrieve=25,
+        top_k_rerank=10,
         include_tables=True,
         priority_sections=priority_sections,
     )
 
     if not chunks:
         return EvidencePack(
-            protocol_id=protocol_id, concept=CONCEPT_PE,
+            protocol_id=protocol_id, concept=CONCEPT_CR,
             candidates=[], low_retrieval_signal=True,
             finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
         )
 
-    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_PE)
+    ta_warning = get_hotspot_warning(ta_pack, CONCEPT_CR)
     context = _build_context(chunks, ta_warning, protocol_id)
 
     result = client.extract(
-        system_prompt=SYSTEM_PROMPT_PE,
+        system_prompt=SYSTEM_PROMPT_CR,
         user_prompt=context,
-        schema=PrimaryEndpointExtraction,
+        schema=CensoringRulesExtraction,
         use_adjudicator=False,
+        prompt_version=PROMPT_VERSION,
     )
     extraction, model_used = result.parsed, result.model_used
 
@@ -220,28 +256,24 @@ def find_primary_endpoint(
     if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
         try:
             result = client.extract(
-                system_prompt=SYSTEM_PROMPT_PE,
+                system_prompt=SYSTEM_PROMPT_CR,
                 user_prompt=context,
-                schema=PrimaryEndpointExtraction,
+                schema=CensoringRulesExtraction,
                 use_adjudicator=True,
+                prompt_version=PROMPT_VERSION,
             )
             extraction, model_used = result.parsed, result.model_used
             used_adjudicator = True
         except Exception as e:
-            print(f"[PrimaryEndpointFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+            print(f"[CensoringRulesFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
 
-    # Build pack first to get stable candidate_ids, then attach metadata
-    pack = _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used, used_adjudicator)
+    pack = _build_censoring_pack(
+        protocol_id, extraction, chunks, model_used, used_adjudicator,
+    )
 
-    # Attach concept-specific metadata keyed by candidate_id (not order-dependent)
-    candidate_metadata = {}
-    for ec, candidate in zip(extraction.candidates, pack.candidates):
-        candidate_metadata[candidate.candidate_id] = {
-            "is_composite": ec.is_composite,
-            "components": ec.components,
-            "time_to_event": ec.time_to_event,
-        }
-    pack.concept_metadata = {"per_candidate": candidate_metadata}
+    print(f"[CensoringRulesFinder] Done. "
+          f"{len(pack.candidates)} rules | "
+          f"confidence={extraction.overall_confidence:.2f}")
 
     return pack
 
@@ -252,7 +284,7 @@ def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], prot
     parts = [f"Protocol ID: {protocol_id}"]
     if ta_warning:
         parts.append(f"\nTA PACK WARNING: {ta_warning}\n")
-    for i, c in enumerate(chunks, 1):
+    for c in chunks:
         parts.append(
             f"[chunk_id={c.chunk_id} | Section: {c.heading} | Type: {c.source_type} | "
             f"Page: {c.page} | Score: {c.score:.2f}]\n{c.text}"
@@ -260,23 +292,20 @@ def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], prot
     return "\n\n---\n\n".join(parts)
 
 
-LOW_RETRIEVAL_THRESHOLD = 3     # fewer chunks than this → low signal
-RERANK_SCORE_FLOOR = 0.2       # top rerank score below this → low signal
+LOW_RETRIEVAL_THRESHOLD = 3
+RERANK_SCORE_FLOOR = 0.2
 
 
 def _build_pack(
     concept, protocol_id, extraction, chunks, model_used,
     adjudicator_used: bool = False,
 ) -> EvidencePack:
-    # Build chunk lookup by chunk_id for deterministic provenance
     chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
 
     candidates = []
-    for i, c in enumerate(extraction.candidates):
-        # Deterministic provenance via chunk_id
+    for c in extraction.candidates:
         matching = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
 
-        # Deterministic from content, not from position in list
         candidate_id = hashlib.sha256(
             f"{protocol_id}:{concept}:{c.chunk_id or ''}:{c.quoted_text}".encode()
         ).hexdigest()[:12]
@@ -296,7 +325,6 @@ def _build_pack(
             explicit=c.explicit,
         ))
 
-    # low_retrieval_signal: few chunks OR top rerank score too low
     low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
     if chunks and chunks[0].rerank_score is not None:
         low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
@@ -315,3 +343,63 @@ def _build_pack(
         model_used=model_used,
         prompt_version=PROMPT_VERSION,
     )
+
+
+def _build_censoring_pack(
+    protocol_id, extraction, chunks, model_used,
+    adjudicator_used: bool = False,
+) -> EvidencePack:
+    chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
+
+    candidates = []
+    for c in extraction.rules:
+        matching = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
+
+        candidate_id = hashlib.sha256(
+            f"{protocol_id}:censoring_rules:{c.chunk_id or ''}:{c.quoted_text}".encode()
+        ).hexdigest()[:12]
+
+        candidates.append(EvidenceCandidate(
+            candidate_id=candidate_id,
+            chunk_id=c.chunk_id,
+            snippet=c.quoted_text,
+            page=matching.page if matching else None,
+            section_title=matching.heading if matching else c.section_title,
+            source_type=matching.source_type if matching else "narrative",
+            sponsor_term=c.sponsor_term,
+            canonical_term="censoring_rules",
+            retrieval_score=matching.retrieval_score if matching else None,
+            rerank_score=matching.rerank_score if matching else None,
+            llm_confidence=c.confidence,
+            explicit=c.explicit,
+        ))
+
+    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
+    if chunks and chunks[0].rerank_score is not None:
+        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
+
+    pack = EvidencePack(
+        protocol_id=protocol_id,
+        concept=CONCEPT_CR,
+        candidates=candidates,
+        contradictions_found=extraction.contradictions_found,
+        contradiction_detail=extraction.contradiction_detail,
+        overall_confidence=extraction.overall_confidence,
+        low_retrieval_signal=low_signal,
+        adjudicator_used=adjudicator_used,
+        requires_human_selection=True,
+        finder_version=FINDER_VERSION,
+        model_used=model_used,
+        prompt_version=PROMPT_VERSION,
+    )
+
+    # Per-candidate metadata with rule_type/applies_to
+    per_candidate = {}
+    for ec, cand in zip(extraction.rules, pack.candidates):
+        per_candidate[cand.candidate_id] = {
+            "rule_type": ec.rule_type,
+            "applies_to": ec.applies_to,
+        }
+    pack.concept_metadata = {"per_candidate": per_candidate}
+
+    return pack

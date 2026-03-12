@@ -22,13 +22,15 @@ Protocol PDF
     ▼
 [Concept Finders]  ← Fixed workflow nodes, not agents
     │
-    ├── index_date          ← Phase 1
-    ├── follow_up_end       ← Phase 1
-    ├── primary_endpoint    ← Phase 1
-    ├── follow_up_start     ← Phase 2
-    ├── eligibility_*       ← Phase 2
-    ├── censoring_rules     ← Phase 2
-    ├── key_covariate       ← Phase 2
+    ├── index_date              ← v0.3
+    ├── follow_up_end           ← v0.3
+    ├── primary_endpoint        ← v0.3
+    ├── eligibility_inclusion   ← v0.3
+    ├── eligibility_exclusion   ← v0.3
+    ├── study_period            ← v0.3
+    ├── censoring_rules         ← v0.3
+    ├── follow_up_start         ← planned
+    ├── key_covariate           ← planned
     └── ...
     │
     Each finder does the same fixed sequence:
@@ -45,22 +47,19 @@ Protocol PDF
     │
     ▼
 [QC Engine]  ← Deterministic, no LLM
-    Pre-review: completeness, retrieval signal, contradictions, page refs
+    Pre-review: completeness, retrieval signal, contradictions, page refs, quote-in-chunk
     Post-review: unresolved packs, cross-concept consistency, missing concepts
     │
     ▼
-[Review UI]  ← Human in the loop
+[Draft Spec Generator]  ← v0.3
+    EvidencePacks → ProgramSpec (Pydantic schema)
+    Outputs: JSON + self-contained HTML preview + formatted Excel workbook
+    Uses selected_candidate_id if reviewed, top-ranked candidate if draft
+    │
+    ▼
+[Review UI]  ← Planned
     Programmer selects governing evidence per concept
     Flags contradictions, adds notes, overrides if needed
-    │
-    ▼
-[Row Completion]  ← Phase 2
-    LLM writes spec row from selected evidence
-    │
-    ▼
-[Excel Workbook Writer]  ← Phase 2
-    Canonical rows → formatted workbook
-    Color-coded: explicit | inferred | flagged
 ```
 
 ---
@@ -92,8 +91,11 @@ If the adjudicator is unavailable, the first-pass result is kept (graceful fallb
 **Model-agnostic client.** LocalModelClient uses OpenAI-compatible interface.
 Swap to GPT-4o = change env vars, zero code changes.
 
-**QC staged correctly.** Pre-review QC flags issues for the reviewer.
+**QC staged correctly.** Pre-review QC flags issues for the reviewer (including quote-in-chunk validation).
 Post-review QC validates completeness after human selection. No false warnings.
+
+**Device-aware retrieval.** Embedding and reranker models auto-detect GPU/CPU.
+Override with `RETRIEVAL_DEVICE` and `RETRIEVAL_FP16` env vars for explicit control.
 
 ---
 
@@ -125,11 +127,16 @@ protocol_spec_assist/
 │
 ├── concepts/
 │   ├── __init__.py
-│   ├── index_date.py           # Phase 1
-│   └── endpoints.py            # follow_up_end + primary_endpoint (Phase 1)
+│   ├── index_date.py           # Index date finder
+│   ├── endpoints.py            # follow_up_end + primary_endpoint
+│   ├── eligibility.py          # eligibility_inclusion + eligibility_exclusion
+│   └── study_design.py         # study_period + censoring_rules
 │
-├── row_completion/             # Phase 2 — row writers per tab
-│   └── __init__.py
+├── spec_output/
+│   ├── __init__.py
+│   ├── spec_schema.py          # ProgramSpec Pydantic model + build_program_spec()
+│   ├── html_renderer.py        # Self-contained HTML preview with confidence badges
+│   └── excel_writer.py         # Formatted Excel workbook (openpyxl)
 │
 ├── qc/
 │   ├── __init__.py
@@ -139,7 +146,7 @@ protocol_spec_assist/
 │   ├── __init__.py
 │   └── protocol_run.py         # Prefect flow — wires everything together
 │
-├── ui/                         # Phase 2 — Streamlit review app
+├── ui/                         # Planned — Streamlit review app
 │   └── __init__.py
 │
 ├── serving/
@@ -154,7 +161,7 @@ data/
 ├── protocols/                  # Drop PDFs here
 ├── gold_set/                   # Manual ground truth CSV
 ├── index/                      # Qdrant persistent store
-└── outputs/                    # EvidencePack JSON + workbooks
+└── outputs/                    # EvidencePack JSON + spec outputs
 
 pyproject.toml                  # Package config — pip install -e .
 requirements.txt                # Pinned dependencies
@@ -169,13 +176,13 @@ requirements.txt                # Pinned dependencies
 pip install -e .
 
 # 2. Download models (one-time, ~20GB total)
-huggingface-cli download Qwen/Qwen3-8B
-huggingface-cli download Qwen/Qwen3-30B-A3B-Instruct-2507  # adjudicator
-huggingface-cli download BAAI/bge-m3
-huggingface-cli download BAAI/bge-reranker-v2-m3
+hf download Qwen/Qwen3-8B
+hf download Qwen/Qwen3-30B-A3B-Instruct-2507  # adjudicator (optional)
+hf download BAAI/bge-m3
+hf download BAAI/bge-reranker-v2-m3
 
 # 3. Prefetch Docling models for offline use
-docling-tools models download
+python -c "from docling.utils.model_downloader import download_models; download_models()"
 
 # 4. Start vLLM servers
 # Default model (port 8000):
@@ -184,7 +191,7 @@ vllm serve Qwen/Qwen3-8B \
     --max-model-len 32768 \
     --enable-prefix-caching
 
-# Adjudicator model (port 8001):
+# Adjudicator model (port 8001, optional):
 vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
     --host 0.0.0.0 --port 8001 \
     --max-model-len 32768 \
@@ -199,34 +206,6 @@ python -m protocol_spec_assist.workflows.protocol_run \
 
 ---
 
-## MVP Build Order
-
-| MVP | What | Why first |
-|-----|------|-----------|
-| 0 | Gold set (5-10 specs) + eval harness | Validates everything. No accuracy claims without this. |
-| 1 | Retrieval + 3 concept finders | Core value — find/surface evidence |
-| 2 | TA pack (oncology) | Synonym expansion, ambiguity warnings |
-| 3 | Review UI | Human selection — product lives or dies here |
-| 4 | Row completion from selected evidence | Copilot-style completion once evidence is confirmed |
-| 5 | Deterministic QC | Trust layer |
-| 6 | Workbook writer | Output artifact |
-
----
-
-## Evaluation Metrics
-
-Three tiers, measured separately:
-
-| Tier | Metric | Target |
-|------|--------|--------|
-| Retrieval recall | Gold snippet in top-10 candidates | >= 80% |
-| Top-1 retrieval quality | Top candidate matches gold | >= 65% |
-| Row accuracy | Completed row matches gold row | >= 70% (Phase 2) |
-
-Build eval harness first. Run on 5 protocols. Fix retrieval before fixing prompts.
-
----
-
 ## Environment Variables
 
 ```bash
@@ -234,8 +213,44 @@ VLLM_BASE_URL=http://localhost:8000/v1         # Default model server
 ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same as default for single-model setup
 VLLM_API_KEY=local                              # API key (default: local)
 DEFAULT_MODEL=Qwen/Qwen3-8B                    # Main extractor
-ADJUDICATOR_MODEL=Qwen/Qwen3-8B               # Same model for first run (or Qwen/Qwen3-30B-A3B-Instruct-2507 for dual setup)
+ADJUDICATOR_MODEL=Qwen/Qwen3-8B               # Same model for first run
+
+# Retrieval device control (auto-detected by default)
+RETRIEVAL_DEVICE=cpu                            # Force CPU for embeddings/reranker
+RETRIEVAL_FP16=false                            # Disable fp16 (required for CPU)
 ```
+
+---
+
+## Pipeline Outputs (v0.3)
+
+Each run produces 4 artifacts in `data/outputs/`:
+
+| File | Content |
+|------|---------|
+| `{protocol_id}_evidence_packs.json` | Raw evidence packs + QC results |
+| `{protocol_id}_spec.json` | Structured ProgramSpec (machine-readable) |
+| `{protocol_id}_spec.html` | Self-contained HTML preview with confidence badges |
+| `{protocol_id}_spec.xlsx` | Formatted Excel workbook (5 tabs, color-coded) |
+
+---
+
+## v0.3 Changes
+
+### New features
+1. **4 new concept finders** — eligibility_inclusion, eligibility_exclusion, study_period, censoring_rules
+2. **Draft spec generation** — EvidencePacks → ProgramSpec with JSON + HTML + Excel outputs
+3. **HTML preview** — self-contained HTML with confidence badges, explicit/inferred markers, QC warnings
+4. **Excel workbook** — 5 tabs (Overview, Inclusion, Exclusion, Endpoints, Censoring Rules), color-coded by confidence
+5. **Spec uses selected candidate** — uses `selected_candidate_id` when reviewed, top-ranked when draft
+6. **qc_quote_in_chunk wired** — validates that candidate snippets appear in source chunks
+7. **Device-aware retrieval** — auto-detects GPU/CPU, respects `RETRIEVAL_DEVICE` and `RETRIEVAL_FP16` env vars
+8. **Shared ProtocolIndex** — single index instance shared across all finders (no repeated model loading)
+
+### Fixes
+9. **Version consistency** — all finders, schemas, and spec at v0.3.0
+10. **Ollama model name** — fixed to `qwen3:8b` (was `qwen2.5:14b`)
+11. **HuggingFace CLI** — updated to `hf download` (was `huggingface-cli download`)
 
 ---
 

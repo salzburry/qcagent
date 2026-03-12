@@ -121,7 +121,7 @@ class LocalModelClient:
         user_prompt: str,
         schema: Type[T],
         use_adjudicator: bool = False,
-        prompt_version: str = "0.2.0",
+        prompt_version: str = "0.3.0",
     ) -> ExtractionResult:
         """
         Extract structured output from LLM, schema-constrained.
