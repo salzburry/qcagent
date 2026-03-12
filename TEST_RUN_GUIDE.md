@@ -1,6 +1,26 @@
 # Protocol Spec Assist — Test Run Guide
 
 Step-by-step instructions to run the full pipeline end-to-end.
+Works on **Google Colab**, **Databricks**, or **any Linux machine with a GPU**.
+
+---
+
+## Table of Contents
+
+1. [Hardware Requirements](#hardware-requirements)
+2. [Environment Setup](#environment-setup) — pick your environment
+   - [Google Colab](#option-a-google-colab)
+   - [Databricks](#option-b-databricks)
+   - [Local Linux / Cloud VM](#option-c-local-linux--cloud-vm)
+3. [Install the Package](#step-1-install-the-package)
+4. [Download Models](#step-2-download-models)
+5. [Start the LLM Server](#step-3-start-the-llm-server)
+6. [Prepare Your Protocol PDF](#step-4-prepare-your-protocol-pdf)
+7. [Run the Pipeline](#step-5-run-the-pipeline)
+8. [Inspect Output](#step-6-inspect-the-output)
+9. [Run Unit Tests](#step-7-run-unit-tests)
+10. [Troubleshooting](#troubleshooting)
+11. [Environment Variables](#environment-variables)
 
 ---
 
@@ -8,61 +28,176 @@ Step-by-step instructions to run the full pipeline end-to-end.
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| **GPU (vLLM)** | 1x GPU with 18 GB VRAM (Qwen3-8B fp16) | 1x 24 GB GPU (e.g. RTX 3090/4090/A5000) |
-| **GPU (adjudicator)** | Not needed for first run — point both endpoints at the same model | 1x 80 GB GPU (A100/H100) for 30B MoE at fp16 |
-| **RAM** | 16 GB | 32 GB (BGE-M3 + reranker load into RAM before GPU transfer) |
+| **GPU (vLLM)** | 1x GPU with 16 GB VRAM (T4) | 1x 24+ GB GPU (V100/A100/RTX 4090) |
+| **RAM** | 16 GB | 32 GB |
 | **Disk** | 40 GB free | 80 GB free |
-| **CPU** | 4 cores | 8+ cores (Docling parsing is CPU-heavy) |
+| **CPU** | 4 cores | 8+ cores |
 
 ### Model sizes on disk
 
-| Model | Size | Purpose |
-|-------|------|---------|
-| `Qwen/Qwen3-8B` | ~16 GB (bf16 weights) | Default LLM extractor |
-| `Qwen/Qwen3-30B-A3B-Instruct-2507` | ~61 GB (bf16) / ~18 GB (Q4_K_M) | Adjudicator (skip for first run) |
-| `BAAI/bge-m3` | ~2.3 GB | Embeddings (dense + sparse) |
-| `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Cross-encoder reranker |
-| Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing |
+| Model | Size | Purpose | Required? |
+|-------|------|---------|-----------|
+| `Qwen/Qwen3-8B` | ~16 GB | LLM extractor | Yes |
+| `BAAI/bge-m3` | ~2.3 GB | Embeddings (dense + sparse) | Yes |
+| `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Reranker | Yes |
+| Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing | Yes |
+| `Qwen/Qwen3-30B-A3B-Instruct-2507` | ~61 GB | Adjudicator (skip for first run) | No |
 
 **Total first-time download: ~21 GB** (without adjudicator).
 
-### No GPU? Alternatives
+---
 
-- **Ollama** can serve Qwen3-8B quantized on CPU (slow but works). See Step 3b below.
-- **vLLM CPU mode**: `pip install vllm-cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple` — functional but substantially slower than GPU.
-- BGE-M3 and the reranker both run on CPU (slower, but functional). Set `RETRIEVAL_DEVICE=cpu` and `RETRIEVAL_FP16=false` env vars, or let auto-detection handle it.
+## Environment Setup
+
+Pick your environment below. After setup, all remaining steps (1–7) are **identical** regardless of environment.
 
 ---
 
-## Step 0: Prerequisites
+### Option A: Google Colab
 
-```bash
-# Python 3.10 or 3.11 recommended (best ML dependency compatibility)
-python --version   # must be >= 3.10
+**Cost:** Free tier (T4 GPU) works. Colab Pro ($10/mo) gives better GPUs and longer sessions.
 
-# GPU verification (if using GPU)
-nvidia-smi         # verify GPU visible and VRAM available
-# nvcc --version   # optional — only needed if building from source
+#### A1. Create a new notebook
+
+Go to [colab.research.google.com](https://colab.research.google.com) → **New Notebook**.
+
+#### A2. Enable GPU
+
+**Runtime → Change runtime type → T4 GPU** (free) or V100/A100 (Pro).
+
+Verify in a cell:
+```python
+!nvidia-smi
+```
+You should see a T4 (16 GB), V100, or A100.
+
+#### A3. Clone the repo
+
+```python
+!git clone https://github.com/salzburry/qcagent.git
+%cd qcagent
 ```
 
-**Note:** `nvidia-smi` is the critical check. `nvcc` (CUDA compiler) is only needed if compiling custom CUDA extensions. Most users do not need it.
+#### A4. Upload your protocol PDF
+
+```python
+import os
+from google.colab import files
+
+os.makedirs("data/protocols", exist_ok=True)
+uploaded = files.upload()  # file picker appears
+
+for filename in uploaded:
+    os.rename(filename, f"data/protocols/{filename}")
+    print(f"Uploaded: data/protocols/{filename}")
+```
+
+#### A5. Notes for Colab
+
+- Free T4 sessions timeout after ~90 min idle, max ~12 hours total.
+- If T4 runs out of memory on Qwen3-8B, use the quantized model (see [Troubleshooting](#troubleshooting-vllm-out-of-memory-on-t4)).
+- All files are lost when the session ends. Download your outputs before disconnecting (see Step 6).
+
+**Now continue to [Step 1: Install the Package](#step-1-install-the-package).** All commands below run in Colab cells with a `!` prefix (e.g., `!pip install ...`).
 
 ---
 
-## Step 1: Install the package
+### Option B: Databricks
+
+#### B1. Cluster requirements
+
+Create or use a cluster with:
+- **Runtime:** Databricks Runtime 14.x+ ML (includes Python 3.10+, PyTorch, CUDA)
+- **Node type:** GPU instance with 16+ GB VRAM (e.g., `Standard_NC6s_v3` on Azure, `g4dn.xlarge` on AWS, `n1-standard-4` + T4 on GCP)
+- **Single node** is fine for testing
+
+#### B2. Clone the repo
+
+In a notebook cell:
+```python
+%sh git clone https://github.com/salzburry/qcagent.git /tmp/qcagent
+```
+
+Or use Databricks Repos: **Repos → Add Repo → paste the GitHub URL**.
+
+#### B3. Set working directory
+
+```python
+%cd /tmp/qcagent
+# Or if using Repos:
+# %cd /Workspace/Repos/<your-username>/qcagent
+```
+
+#### B4. Upload your protocol PDF
+
+Use the Databricks UI: **Data → DBFS → Upload** → place in a known path.
+
+Then copy it:
+```python
+%sh mkdir -p data/protocols
+%sh cp /dbfs/FileStore/your_protocol.pdf data/protocols/
+```
+
+Or upload directly from a notebook cell:
+```python
+import shutil, os
+os.makedirs("data/protocols", exist_ok=True)
+# If using DBFS:
+shutil.copy("/dbfs/FileStore/your_protocol.pdf", "data/protocols/your_protocol.pdf")
+```
+
+#### B5. Notes for Databricks
+
+- Databricks ML Runtime comes with PyTorch + CUDA pre-installed — vLLM installs faster.
+- If your cluster has multiple GPUs, vLLM will auto-detect and use them.
+- For production, consider serving the model via Databricks Model Serving instead of vLLM in a notebook.
+- Cluster auto-terminates after idle timeout — download outputs or save to DBFS.
+
+**Now continue to [Step 1: Install the Package](#step-1-install-the-package).** All commands below run in notebook cells with `%sh` prefix.
+
+---
+
+### Option C: Local Linux / Cloud VM
+
+#### C1. Requirements
+
+- Python 3.10 or 3.11
+- NVIDIA GPU with 16+ GB VRAM
+- CUDA drivers installed (`nvidia-smi` should work)
+
+#### C2. Clone and enter the repo
 
 ```bash
-cd /path/to/qcagent
+git clone https://github.com/salzburry/qcagent.git
+cd qcagent
+```
 
-# Create a virtual environment (recommended)
+#### C3. Create a virtual environment
+
+```bash
 python -m venv .venv
 source .venv/bin/activate
+```
 
-# Install protocol-spec-assist + all dependencies
+#### C4. Place your protocol PDF
+
+```bash
+mkdir -p data/protocols
+cp /path/to/your_protocol.pdf data/protocols/
+```
+
+**Now continue to [Step 1: Install the Package](#step-1-install-the-package).**
+
+---
+
+## Step 1: Install the Package
+
+```bash
+# Install the project + dependencies
 pip install -e ".[dev]"
 
-# Install vLLM + HuggingFace CLI
-pip install vllm huggingface-hub
+# Install vLLM (the LLM server)
+pip install vllm
 
 # Verify install
 python -c "from protocol_spec_assist.schemas.evidence import EvidencePack; print('OK')"
@@ -71,88 +206,129 @@ python -m protocol_spec_assist.workflows.protocol_run --help
 
 ### Troubleshooting: Docling install
 
-Docling depends on PyTorch. If you're on a CPU-only machine:
+Docling depends on PyTorch. If you're on a CPU-only machine or hit issues:
 
 ```bash
 pip install docling --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
-On macOS Intel:
-```bash
-pip install "docling[mac_intel]"
-```
-
-If Docling fails to install entirely, the pipeline will fall back to PyMuPDF automatically (less accurate table extraction, but functional).
+If Docling fails to install entirely, the pipeline falls back to PyMuPDF automatically (less accurate table extraction, but functional).
 
 ---
 
-## Step 2: Download models
+## Step 2: Download Models
 
-### 2a. Embedding + Reranker models (auto-downloaded on first use)
+### 2a. Embedding + Reranker (auto-download on first use)
 
-These download automatically from HuggingFace when first loaded by FlagEmbedding.
-To pre-download for offline use:
+These download automatically from HuggingFace when first loaded.
+To pre-download (recommended to avoid timeout during pipeline run):
 
 ```bash
+pip install huggingface-hub
+
 # BGE-M3 embeddings (~2.3 GB)
-hf download BAAI/bge-m3
+huggingface-cli download BAAI/bge-m3
 
 # BGE reranker (~2.3 GB)
-hf download BAAI/bge-reranker-v2-m3
+huggingface-cli download BAAI/bge-reranker-v2-m3
 ```
 
-### 2b. LLM model for vLLM
+### 2b. LLM model
 
 ```bash
-# Default extractor model (~16 GB)
-hf download Qwen/Qwen3-8B
+# Default extractor (~16 GB)
+huggingface-cli download Qwen/Qwen3-8B
 ```
 
-**Note on adjudicator:** For a first test run, skip the 30B adjudicator model entirely. Point both `DEFAULT_MODEL` and `ADJUDICATOR_MODEL` at `Qwen/Qwen3-8B`. The code now gracefully falls back to the first-pass result if the adjudicator is unavailable.
+Skip the 30B adjudicator for first run. We point both endpoints at the 8B model.
 
 ### 2c. Docling models
 
-Pre-download Docling's layout/table models for offline use:
-
 ```bash
-# Programmatic pre-download (~360 MB)
 python -c "from docling.utils.model_downloader import download_models; download_models()"
 ```
 
-Or via CLI if available:
-```bash
-docling-tools models download
-```
-
-Without pre-download, Docling will auto-download on first PDF conversion (~30s extra).
+Without this, Docling auto-downloads on first PDF parse (~30s extra).
 
 ---
 
-## Step 3: Start the LLM server
+## Step 3: Start the LLM Server
 
-### 3a. vLLM (recommended — requires CUDA GPU)
+### 3a. Pick the right vLLM settings for your GPU
+
+| GPU | VRAM | max-model-len | Notes |
+|-----|------|---------------|-------|
+| T4 | 16 GB | `16384` | Tight — use `--gpu-memory-utilization 0.95` |
+| V100 | 16-32 GB | `24576` | Comfortable |
+| A100 | 40-80 GB | `32768` | Full context, plenty of room |
+| A10G | 24 GB | `24576` | Common on AWS/Databricks |
+
+### 3b. Start vLLM
+
+**In a separate terminal** (or background process in a notebook):
 
 ```bash
-# Start default model on port 8000
 vllm serve Qwen/Qwen3-8B \
     --host 0.0.0.0 \
     --port 8000 \
-    --max-model-len 32768 \
+    --max-model-len 16384 \
     --enable-prefix-caching \
-    --dtype auto
+    --dtype auto \
+    --gpu-memory-utilization 0.95
+```
 
-# Verify it's running (in another terminal)
+Adjust `--max-model-len` per the table above.
+
+**In a notebook** (Colab or Databricks), start as a background process:
+
+```python
+import subprocess
+
+vllm_proc = subprocess.Popen(
+    [
+        "vllm", "serve", "Qwen/Qwen3-8B",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--max-model-len", "16384",       # adjust per GPU
+        "--enable-prefix-caching",
+        "--dtype", "auto",
+        "--gpu-memory-utilization", "0.95",
+    ],
+    stdout=open("vllm_stdout.log", "w"),
+    stderr=open("vllm_stderr.log", "w"),
+)
+print(f"vLLM starting (PID: {vllm_proc.pid})...")
+```
+
+### 3c. Wait for vLLM to be ready (2-3 minutes)
+
+```python
+import urllib.request, time
+
+for i in range(60):
+    try:
+        resp = urllib.request.urlopen("http://localhost:8000/v1/models", timeout=5)
+        if resp.status == 200:
+            print("vLLM is ready!")
+            break
+    except Exception:
+        pass
+    if i % 6 == 0:
+        print(f"  Waiting... ({i * 5}s elapsed)")
+    time.sleep(5)
+else:
+    print("vLLM failed to start. Check: tail -30 vllm_stderr.log")
+```
+
+Or from the terminal:
+```bash
+# Poll until ready
 curl http://localhost:8000/v1/models
 ```
 
-Expected output: JSON listing `Qwen/Qwen3-8B` as available.
-
-**VRAM note:** Qwen3-8B at bf16 needs ~16 GB for weights + ~2-6 GB for KV cache depending on context length. A 24 GB GPU fits comfortably. A 16 GB GPU works with `--max-model-len 8192`.
-
-**First-run recommendation: single model for both endpoints.**
+### 3d. Set environment variables
 
 ```bash
-# Point both default and adjudicator at the same model
 export VLLM_BASE_URL=http://localhost:8000/v1
 export ADJUDICATOR_BASE_URL=http://localhost:8000/v1
 export VLLM_API_KEY=local
@@ -160,220 +336,219 @@ export DEFAULT_MODEL=Qwen/Qwen3-8B
 export ADJUDICATOR_MODEL=Qwen/Qwen3-8B
 ```
 
-This avoids needing to serve the 30B MoE model separately. The adjudicator pass will use the same 8B model — less powerful but sufficient to validate the pipeline works end-to-end.
+In a notebook:
+```python
+import os
+os.environ["VLLM_BASE_URL"] = "http://localhost:8000/v1"
+os.environ["ADJUDICATOR_BASE_URL"] = "http://localhost:8000/v1"
+os.environ["VLLM_API_KEY"] = "local"
+os.environ["DEFAULT_MODEL"] = "Qwen/Qwen3-8B"
+os.environ["ADJUDICATOR_MODEL"] = "Qwen/Qwen3-8B"
+```
 
-### 3b. Ollama alternative (no CUDA required, slower)
+### 3e. Ollama alternative (no CUDA required, slower)
 
 ```bash
-# Install Ollama: https://ollama.ai
 curl -fsSL https://ollama.ai/install.sh | sh
-
-# Pull a Qwen3 model
 ollama pull qwen3:8b
 
-# Ollama serves on port 11434 by default
-# Set env to redirect the pipeline:
 export VLLM_BASE_URL=http://localhost:11434/v1
 export ADJUDICATOR_BASE_URL=http://localhost:11434/v1
 export DEFAULT_MODEL=qwen3:8b
 export ADJUDICATOR_MODEL=qwen3:8b
 ```
 
-**Note:** Ollama now supports structured outputs via `response_format`, but this repo has not been validated against Ollama's behavior for strict schema-constrained extraction. vLLM remains the safer default for first-run testing.
+**Note:** Ollama supports structured outputs but has not been fully validated for strict schema-constrained extraction. vLLM is the safer default.
 
 ---
 
-## Step 4: Get a test protocol PDF
+## Step 4: Prepare Your Protocol PDF
 
-Download a real observational study protocol from ClinicalTrials.gov:
+### If your PDF is already text-based (digital)
 
+Just place it in `data/protocols/`:
 ```bash
-mkdir -p data/protocols
-
-# Option A: MS registry observational study (~50 pages)
-curl -L -o data/protocols/NCT01013350.pdf \
-    "https://cdn.clinicaltrials.gov/large-docs/50/NCT01013350/Prot_000.pdf"
-
-# Option B: Cladribine tablets clinical study (~100+ pages)
-curl -L -o data/protocols/NCT03961204.pdf \
-    "https://cdn.clinicaltrials.gov/large-docs/04/NCT03961204/Prot_000.pdf"
-
-# Option C: Surgical pain observational study
-curl -L -o data/protocols/NCT06417528.pdf \
-    "https://cdn.clinicaltrials.gov/large-docs/28/NCT06417528/Prot_SAP_000.pdf"
-
-# Verify download
-ls -lh data/protocols/
-file data/protocols/*.pdf   # should say "PDF document"
+cp your_protocol.pdf data/protocols/
 ```
 
+### If your PDF is scanned (images only)
+
+You must OCR it first so the parser can extract text. Options:
+
+- **Adobe Acrobat:** File → Save As Other → Searchable PDF (recommended)
+- **ocrmypdf (free, command-line):**
+  ```bash
+  pip install ocrmypdf
+  # May also need: apt install tesseract-ocr (Linux) or brew install tesseract (Mac)
+  ocrmypdf scanned_protocol.pdf data/protocols/protocol_ocr.pdf
+  ```
+
+After OCR, verify text was extracted:
+```bash
+python -c "
+import fitz
+doc = fitz.open('data/protocols/your_protocol.pdf')
+text = doc[0].get_text()
+print(f'Page 1 text length: {len(text)} chars')
+print(text[:500])
+doc.close()
+"
+```
+
+If the output shows text, you're good. If it's empty or garbled, the OCR quality is too low.
+
 ---
 
-## Step 5: Run the pipeline
+## Step 5: Run the Pipeline
 
 ```bash
-# Make sure vLLM is running (Step 3) before this
-
-# Basic run — no TA pack
 python -m protocol_spec_assist.workflows.protocol_run \
-    data/protocols/NCT01013350.pdf \
-    --protocol-id NCT01013350
+    data/protocols/your_protocol.pdf \
+    --protocol-id your_protocol_id
+```
 
-# With TA pack (synonym expansion + section priorities)
-# Only use --ta if the protocol matches the therapeutic area.
-# The sample protocols above are neurology/pain studies — run without --ta,
-# or substitute a real oncology/cardiovascular protocol PDF.
+### Options
+
+```bash
+# With therapeutic area pack (synonym expansion + section priorities)
+--ta oncology              # oncology | cardiovascular | respiratory | immunology | vaccines
+
+# With data source override
+--data-source cota         # cota | flatiron | optum_cdm | optum_ehr | marketscan | inalon | quest
+
+# Reuse existing index (skip re-parsing and re-indexing)
+--skip-indexing
+
+# Custom output directory
+--output-dir data/outputs
+```
+
+### Full example
+
+```bash
 python -m protocol_spec_assist.workflows.protocol_run \
-    data/protocols/NCT03961204.pdf \
-    --protocol-id NCT03961204
+    data/protocols/my_protocol.pdf \
+    --protocol-id MY_PROTOCOL_001 \
+    --ta oncology \
+    --data-source flatiron
+```
+
+### In a notebook
+
+```python
+!python -m protocol_spec_assist.workflows.protocol_run \
+    data/protocols/my_protocol.pdf \
+    --protocol-id MY_PROTOCOL_001 \
+    --ta oncology
 ```
 
 ### What happens during the run
 
 ```
-Step 0: Model preflight      — verifies vLLM is reachable and model is loaded
+Step 0: Model preflight      — verifies vLLM is reachable
 Step 1: Parse protocol        — Docling extracts sections, tables, pages (~30-120s)
 Step 2: Index protocol        — BGE-M3 embeds chunks, Qdrant indexes (~20-60s)
 Step 3: Find concepts         — 12 concept finders run sequentially:
-        ├── index_date            — hybrid retrieval → rerank → LLM extract
-        ├── follow_up_end         — same workflow, different queries/schema
-        ├── primary_endpoint      — same workflow, different queries/schema
-        ├── eligibility_inclusion — extracts all inclusion criteria
-        ├── eligibility_exclusion — extracts all exclusion criteria
-        ├── study_period          — extracts study dates, data source, design type
-        ├── censoring_rules       — extracts all censoring rules
-        ├── demographics          — static template + LLM refinement (source-aware)
-        ├── clinical_characteristics — static template + LLM refinement
-        ├── biomarkers            — static template + LLM refinement
-        ├── lab_variables         — static template + LLM refinement
-        └── treatment_variables   — static template + LLM refinement
-        Note: if confidence is low, each finder attempts an adjudicator pass.
-        If the adjudicator is unavailable, the first-pass result is kept.
-        All finders share a single ProtocolIndex (no repeated model loading).
-Step 4: Pre-review QC         — deterministic rule checks + quote-in-chunk validation
-Step 5: Save evidence packs   — JSON output to data/outputs/
-Step 6: Generate draft spec   — ProgramSpec JSON + HTML preview + Excel workbook
+        ├── index_date
+        ├── follow_up_end
+        ├── primary_endpoint
+        ├── eligibility_inclusion
+        ├── eligibility_exclusion
+        ├── study_period
+        ├── censoring_rules
+        ├── demographics
+        ├── clinical_characteristics
+        ├── biomarkers
+        ├── lab_variables
+        └── treatment_variables
+Step 4: Pre-review QC         — deterministic rule checks
+Step 5: Save evidence packs   — JSON output
+Step 6: Generate draft spec   — JSON + HTML + Excel
 ```
 
-### Expected output
-
-```
-[Parser] Docling loaded. Parsing NCT01013350...
-[Index] Indexing 47 chunks for NCT01013350...
-[Index] Done. 47 points indexed.
-[IndexDateFinder] Done. 3 candidates | confidence=0.82 | contradictions=False
-[FollowUpEndFinder] Done. 2 candidates | confidence=0.75 | contradictions=False
-[PrimaryEndpointFinder] Done. 4 candidates | confidence=0.88 | contradictions=False
-[InclusionFinder] Done. 5 criteria | confidence=0.90
-[ExclusionFinder] Done. 3 criteria | confidence=0.85
-[StudyPeriodFinder] Done. 2 candidates | confidence=0.78 | data_source=...
-[CensoringRulesFinder] Done. 4 rules | confidence=0.80
-=== QC Summary: 0 errors | 1 warnings | 0 info ===
-[!] [QC-002] (pre_review) follow_up_end: Low retrieval signal for follow_up_end.
-[Workflow] Evidence packs saved: data/outputs/NCT01013350_evidence_packs.json
-[Spec] Generated: spec_json, spec_html, spec_excel
-```
+**Expected runtime:** 10-30 minutes depending on GPU and protocol length.
 
 ---
 
-## Step 6: Inspect the output
+## Step 6: Inspect the Output
+
+Output files appear in `data/outputs/`:
+
+| File | Description |
+|------|-------------|
+| `{id}_evidence_packs.json` | Raw evidence with ranked candidates and QC results |
+| `{id}_spec.json` | Structured ProgramSpec (machine-readable) |
+| `{id}_spec.html` | Self-contained HTML preview with confidence badges |
+| `{id}_spec.xlsx` | Excel workbook (10 sheets matching program spec template) |
+
+### View from terminal
 
 ```bash
-# View the evidence packs JSON
-python -m json.tool data/outputs/NCT01013350_evidence_packs.json | head -80
-
-# Or use jq if installed
-jq '.evidence_packs.index_date.candidates[0]' data/outputs/NCT01013350_evidence_packs.json
-
-# Open the HTML spec preview in a browser
-open data/outputs/NCT01013350_spec.html    # macOS
-xdg-open data/outputs/NCT01013350_spec.html  # Linux
-
-# View the draft spec JSON
-python -m json.tool data/outputs/NCT01013350_spec.json | head -60
+python -m json.tool data/outputs/MY_PROTOCOL_001_evidence_packs.json | head -80
 ```
 
-The pipeline produces 4 output files:
-- `*_evidence_packs.json`: raw evidence packs + QC results
-- `*_spec.json`: structured ProgramSpec (machine-readable)
-- `*_spec.html`: self-contained HTML preview with confidence badges
-- `*_spec.xlsx`: formatted Excel workbook (10 sheets: 1.Cover, 2.QC Review, 3.Data Prep, 4.StudyPop, 5A.Demos, 5B.ClinChars, 5C.BioVars, 5D.LabVars, 6.TreatVars, 7.Outcomes)
+### View HTML in a notebook
 
-The evidence packs contain:
-- `evidence_packs`: one EvidencePack per concept (12 concepts), each with ranked candidates
-- `qc_results`: list of QC findings (errors, warnings, info)
+```python
+from IPython.display import HTML, display
 
-Each candidate has:
-- `snippet`: exact quoted text from the protocol
-- `chunk_id`: link back to indexed chunk (valid UUID)
-- `page`: page number (or null)
-- `section_title`: section heading from the document
-- `retrieval_score` / `rerank_score`: retrieval pipeline scores
-- `llm_confidence`: model's confidence in this candidate
+with open("data/outputs/MY_PROTOCOL_001_spec.html") as f:
+    display(HTML(f.read()))
+```
+
+### Download from Colab
+
+```python
+from google.colab import files
+files.download("data/outputs/MY_PROTOCOL_001_spec.xlsx")
+files.download("data/outputs/MY_PROTOCOL_001_spec.html")
+files.download("data/outputs/MY_PROTOCOL_001_evidence_packs.json")
+```
+
+### Save to DBFS from Databricks
+
+```python
+import shutil
+shutil.copytree("data/outputs", "/dbfs/FileStore/protocol_outputs", dirs_exist_ok=True)
+```
+
+### What's in the evidence packs
+
+Each concept has ranked candidates with:
+- `snippet` — exact quoted text from the protocol
+- `chunk_id` — UUID linking back to the indexed chunk
+- `page` — page number (or null)
+- `section_title` — heading from the document
+- `retrieval_score` / `rerank_score` — retrieval pipeline scores
+- `llm_confidence` — model's self-reported confidence
 
 ---
 
-## Step 7: Run unit tests (no GPU needed)
+## Step 7: Run Unit Tests
+
+No GPU, no vLLM, no models needed. Just verifies the code logic is correct.
 
 ```bash
-# All tests — fast, no external dependencies
+# All 122 tests
 pytest tests/ -v
 
-# Just the v0.2 fix tests
-pytest tests/test_v02_fixes.py -v
+# Individual test files
+pytest tests/test_qc_rules.py -v        # QC engine
+pytest tests/test_evidence_pack.py -v    # Evidence pack schema
+pytest tests/test_spec_output.py -v      # Spec generation + Excel
+pytest tests/test_ta_loader.py -v        # TA pack loading
+pytest tests/test_v02_fixes.py -v        # Regression tests
 ```
 
----
+### Quick smoke test (no GPU, no vLLM)
 
-## Troubleshooting
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| `RuntimeError: Default model server not available` | vLLM not running or wrong port | Start vLLM (Step 3), check `curl http://localhost:8000/v1/models` |
-| `ImportError: FlagEmbedding not installed` | Missing embedding dependency | `pip install FlagEmbedding` |
-| `ImportError: docling` | Docling not installed | `pip install docling` — pipeline will auto-fallback to PyMuPDF |
-| `CUDA out of memory` | Not enough VRAM for Qwen3-8B | Use `--max-model-len 8192` or use Ollama with quantized model |
-| `Empty response content from model` | Model returned blank | Automatic retry (up to 2x). If persistent, check vLLM logs |
-| `BackendUnavailable` on pip install | Wrong setuptools version | `pip install --upgrade setuptools wheel` then `pip install -e .` |
-| Slow first run | Downloading BGE-M3 + Docling models | One-time download. Subsequent runs are faster |
-| `No evidence candidates found` | Protocol doesn't discuss this concept | Expected for some protocols. Check QC output. |
-| Adjudicator unavailable warning | Adjudicator endpoint not running | Safe to ignore — first-pass result is kept. Set both endpoints to same model to suppress. |
-
----
-
-## Environment Variables (optional overrides)
+Verify everything imports and the CLI works:
 
 ```bash
-export VLLM_BASE_URL=http://localhost:8000/v1                    # Default model endpoint
-export ADJUDICATOR_BASE_URL=http://localhost:8000/v1             # Adjudicator endpoint (same as default for single-model setup)
-export VLLM_API_KEY=local                                        # API key (default: "local")
-export DEFAULT_MODEL=Qwen/Qwen3-8B                              # Model name on vLLM
-export ADJUDICATOR_MODEL=Qwen/Qwen3-8B                          # Adjudicator model (same for first run)
-export RETRIEVAL_DEVICE=cpu                                      # Force CPU for embeddings/reranker (auto-detected by default)
-export RETRIEVAL_FP16=false                                      # Disable fp16 (required for CPU)
-```
+pip install -e ".[dev]"
 
-For a dual-model production setup:
-```bash
-export ADJUDICATOR_BASE_URL=http://localhost:8001/v1
-export ADJUDICATOR_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
-```
-
----
-
-## Quick smoke test (no GPU, no vLLM)
-
-If you just want to verify the code works without running the full pipeline:
-
-```bash
-# 1. Install
-pip install -e ".[dev]" --no-deps
-pip install pydantic pyyaml pytest
-
-# 2. Run unit tests
 pytest tests/ -v
 
-# 3. Verify imports
 python -c "
 from protocol_spec_assist.schemas.evidence import EvidencePack, EvidenceCandidate
 from protocol_spec_assist.qc.rules import run_all_qc, qc_quote_in_chunk
@@ -382,6 +557,68 @@ from protocol_spec_assist.serving.model_client import LocalModelClient, Extracti
 print('All imports OK')
 "
 
-# 4. Verify CLI
 python -m protocol_spec_assist.workflows.protocol_run --help
+```
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `RuntimeError: Default model server not available` | vLLM isn't running. Start it (Step 3), then check `curl http://localhost:8000/v1/models` |
+| `ImportError: No module named 'pydantic'` | Run `pip install -e ".[dev]"` |
+| `ImportError: docling` | `pip install docling` — or ignore, pipeline auto-falls-back to PyMuPDF |
+| `CUDA out of memory` | Reduce `--max-model-len` or use quantized model (see below) |
+| `Empty response content from model` | Auto-retries 2x. If persistent, check `tail -30 vllm_stderr.log` |
+| Empty text from parsed PDF | Your PDF is scanned. OCR it first (Step 4) |
+| Slow first run | One-time model downloads. Subsequent runs are faster |
+| `No evidence candidates found` | Expected for some concepts. Check QC output |
+| Adjudicator unavailable warning | Safe to ignore. Both endpoints point to same model |
+
+### Troubleshooting: vLLM out of memory on T4
+
+If the T4 (16 GB) can't fit Qwen3-8B, use the 4-bit quantized version:
+
+```bash
+pip install autoawq
+
+vllm serve Qwen/Qwen3-8B-AWQ \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --max-model-len 16384 \
+    --enable-prefix-caching \
+    --dtype auto \
+    --quantization awq
+```
+
+Then update environment variables:
+```bash
+export DEFAULT_MODEL=Qwen/Qwen3-8B-AWQ
+export ADJUDICATOR_MODEL=Qwen/Qwen3-8B-AWQ
+```
+
+---
+
+## Environment Variables
+
+All optional. Sensible defaults are built in.
+
+```bash
+# LLM endpoints
+export VLLM_BASE_URL=http://localhost:8000/v1          # Default model
+export ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Adjudicator (same as default for single-model)
+export VLLM_API_KEY=local                               # API key
+export DEFAULT_MODEL=Qwen/Qwen3-8B                     # Model name on vLLM
+export ADJUDICATOR_MODEL=Qwen/Qwen3-8B                 # Same for first run
+
+# Retrieval (auto-detected, override if needed)
+export RETRIEVAL_DEVICE=cpu                             # Force CPU for embeddings
+export RETRIEVAL_FP16=false                             # Disable fp16 (required for CPU)
+```
+
+For dual-model production setup:
+```bash
+export ADJUDICATOR_BASE_URL=http://localhost:8001/v1
+export ADJUDICATOR_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 ```
