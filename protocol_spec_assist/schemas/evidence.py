@@ -79,6 +79,7 @@ class EvidencePack(BaseModel):
     # Human review state
     requires_human_selection: bool = True
     selected_candidate_id: Optional[str] = None  # stable candidate_id, not index
+    selected_candidate_ids: Optional[list[str]] = None  # for multi-row concepts (inclusion, exclusion, censoring)
     reviewer_notes: Optional[str] = None
     reviewer_override: Optional[str] = None  # free-text if no candidate is right
 
@@ -109,6 +110,15 @@ class EvidencePack(BaseModel):
                 self.selected_candidate_id = candidate_id
                 return True
         return False
+
+    @property
+    def selected_candidates(self) -> Optional[list[EvidenceCandidate]]:
+        """For multi-row concepts: return only reviewer-selected candidates.
+        Returns None if no multi-row selection has been made (draft mode)."""
+        if self.selected_candidate_ids is None:
+            return None
+        id_set = set(self.selected_candidate_ids)
+        return [c for c in self.candidates if c.candidate_id in id_set]
 
     @property
     def governing_text(self) -> Optional[str]:

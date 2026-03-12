@@ -66,8 +66,8 @@ class EmbeddingModel:
             try:
                 from FlagEmbedding import BGEM3FlagModel
                 _device, use_fp16 = _detect_device_and_fp16()
-                self._model = BGEM3FlagModel(DENSE_MODEL, use_fp16=use_fp16)
-                print(f"[Embeddings] Loaded {DENSE_MODEL} (fp16={use_fp16})")
+                self._model = BGEM3FlagModel(DENSE_MODEL, device=_device, use_fp16=use_fp16)
+                print(f"[Embeddings] Loaded {DENSE_MODEL} (device={_device}, fp16={use_fp16})")
             except ImportError:
                 raise ImportError(
                     "FlagEmbedding not installed.\n"
@@ -100,8 +100,8 @@ class Reranker:
             try:
                 from FlagEmbedding import FlagReranker
                 _device, use_fp16 = _detect_device_and_fp16()
-                self._model = FlagReranker(RERANKER_MODEL, use_fp16=use_fp16)
-                print(f"[Reranker] Loaded {RERANKER_MODEL} (fp16={use_fp16})")
+                self._model = FlagReranker(RERANKER_MODEL, device=_device, use_fp16=use_fp16)
+                print(f"[Reranker] Loaded {RERANKER_MODEL} (device={_device}, fp16={use_fp16})")
             except ImportError:
                 raise ImportError(
                     "FlagEmbedding not installed.\n"

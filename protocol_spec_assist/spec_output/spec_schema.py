@@ -148,7 +148,9 @@ def build_program_spec(
     if "eligibility_inclusion" in packs:
         inc_pack = packs["eligibility_inclusion"]
         meta = (inc_pack.concept_metadata or {}).get("per_candidate", {})
-        for cand in inc_pack.candidates:
+        # Honor reviewer selection if present; otherwise include all (draft mode)
+        candidates = inc_pack.selected_candidates if inc_pack.selected_candidates is not None else inc_pack.candidates
+        for cand in candidates:
             cm = meta.get(cand.candidate_id, {})
             spec.inclusion_criteria.append(CriterionEntry(
                 label=cand.sponsor_term or "",
@@ -165,7 +167,8 @@ def build_program_spec(
     if "eligibility_exclusion" in packs:
         exc_pack = packs["eligibility_exclusion"]
         meta = (exc_pack.concept_metadata or {}).get("per_candidate", {})
-        for cand in exc_pack.candidates:
+        candidates = exc_pack.selected_candidates if exc_pack.selected_candidates is not None else exc_pack.candidates
+        for cand in candidates:
             cm = meta.get(cand.candidate_id, {})
             spec.exclusion_criteria.append(CriterionEntry(
                 label=cand.sponsor_term or "",
@@ -182,7 +185,8 @@ def build_program_spec(
     if "censoring_rules" in packs:
         cr_pack = packs["censoring_rules"]
         meta = (cr_pack.concept_metadata or {}).get("per_candidate", {})
-        for cand in cr_pack.candidates:
+        candidates = cr_pack.selected_candidates if cr_pack.selected_candidates is not None else cr_pack.candidates
+        for cand in candidates:
             cm = meta.get(cand.candidate_id, {})
             spec.censoring_rules.append(CensoringRuleEntry(
                 label=cand.sponsor_term or "",

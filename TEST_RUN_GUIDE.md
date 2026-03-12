@@ -219,17 +219,13 @@ python -m protocol_spec_assist.workflows.protocol_run \
     data/protocols/NCT01013350.pdf \
     --protocol-id NCT01013350
 
-# With oncology TA pack (synonym expansion + section priorities)
-python -m protocol_spec_assist.workflows.protocol_run \
-    data/protocols/NCT01013350.pdf \
-    --protocol-id NCT01013350 \
-    --ta oncology
-
-# With cardiovascular TA pack
+# With TA pack (synonym expansion + section priorities)
+# Only use --ta if the protocol matches the therapeutic area.
+# The sample protocols above are neurology/pain studies — run without --ta,
+# or substitute a real oncology/cardiovascular protocol PDF.
 python -m protocol_spec_assist.workflows.protocol_run \
     data/protocols/NCT03961204.pdf \
-    --protocol-id NCT03961204 \
-    --ta cardiovascular
+    --protocol-id NCT03961204
 ```
 
 ### What happens during the run
