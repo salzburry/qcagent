@@ -23,11 +23,11 @@ class ModelConfig(BaseModel):
     default_base_url: str = "http://localhost:8000/v1"
     adjudicator_base_url: str = "http://localhost:8001/v1"
     api_key: str = "local"
-    default_model: str = "Qwen/Qwen3-8B"                   # laptop default
-    adjudicator_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"  # harder cases
+    default_model: str = "Qwen/Qwen3-235B-A22B"            # MoE — fits on H100 80GB
+    adjudicator_model: str = "Qwen/Qwen3-235B-A22B"      # same model (single-server)
     vision_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"    # scanned pages
     temperature: float = 0.0                              # deterministic extraction
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     max_retries: int = 2                                  # retry on transient failures
     timeout: float = 120.0                                # seconds
 
@@ -44,8 +44,8 @@ def get_config() -> ModelConfig:
                 os.environ.get("VLLM_BASE_URL", "http://localhost:8001/v1"),
             ),
             api_key=os.environ.get("VLLM_API_KEY", "local"),
-            default_model=os.environ.get("DEFAULT_MODEL", "Qwen/Qwen3-8B"),
-            adjudicator_model=os.environ.get("ADJUDICATOR_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507"),
+            default_model=os.environ.get("DEFAULT_MODEL", "Qwen/Qwen3-235B-A22B"),
+            adjudicator_model=os.environ.get("ADJUDICATOR_MODEL", "Qwen/Qwen3-235B-A22B"),
         )
     return _config
 
@@ -222,33 +222,19 @@ class LocalModelClient:
 # ── vLLM startup helper ───────────────────────────────────────────────────────
 
 VLLM_START_COMMANDS = {
-    "qwen3-8b": """
+    "qwen3-235b-a22b": """
 # Start vLLM server (run in terminal before using the pipeline):
-vllm serve Qwen/Qwen3-8B \\
+# Qwen3-235B-A22B is a Mixture-of-Experts model (~22B active params, fits on H100 80GB)
+vllm serve Qwen/Qwen3-235B-A22B \\
     --host 0.0.0.0 \\
     --port 8000 \\
     --max-model-len 32768 \\
     --enable-prefix-caching \\
-    --dtype auto
-
-# For MoE 30B model (needs more VRAM — separate port):
-vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \\
-    --host 0.0.0.0 \\
-    --port 8001 \\
-    --max-model-len 32768 \\
-    --enable-prefix-caching \\
-    --dtype auto
-""",
-    "ollama_fallback": """
-# Ollama fallback (if vLLM setup is complex):
-ollama serve
-ollama pull qwen3:8b
-# Then set: VLLM_BASE_URL=http://localhost:11434/v1
-# Note: Ollama now supports structured outputs via response_format, but this repo
-# has not been validated against Ollama's behavior for strict schema-constrained
-# extraction. vLLM remains the safer default for first-run testing.
+    --dtype auto \\
+    --gpu-memory-utilization 0.90 \\
+    --tensor-parallel-size 1
 """,
 }
 
 def print_startup_instructions():
-    print(VLLM_START_COMMANDS["qwen3-8b"])
+    print(VLLM_START_COMMANDS["qwen3-235b-a22b"])

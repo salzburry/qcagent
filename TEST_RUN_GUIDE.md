@@ -28,22 +28,21 @@ Works on **Google Colab**, **Databricks**, or **any Linux machine with a GPU**.
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| **GPU (vLLM)** | 1x GPU with 16 GB VRAM (T4) | 1x 24+ GB GPU (V100/A100/RTX 4090) |
-| **RAM** | 16 GB | 32 GB |
-| **Disk** | 40 GB free | 80 GB free |
-| **CPU** | 4 cores | 8+ cores |
+| **GPU (vLLM)** | 1x H100 80 GB | 1x H100 80 GB |
+| **RAM** | 32 GB | 64 GB |
+| **Disk** | 100 GB free | 150 GB free |
+| **CPU** | 8 cores | 16+ cores |
 
 ### Model sizes on disk
 
 | Model | Size | Purpose | Required? |
 |-------|------|---------|-----------|
-| `Qwen/Qwen3-8B` | ~16 GB | LLM extractor | Yes |
+| `Qwen/Qwen3-235B-A22B` | ~60 GB | LLM extractor + adjudicator (MoE) | Yes |
 | `BAAI/bge-m3` | ~2.3 GB | Embeddings (dense + sparse) | Yes |
 | `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Reranker | Yes |
 | Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing | Yes |
-| `Qwen/Qwen3-30B-A3B-Instruct-2507` | ~61 GB | Adjudicator (skip for first run) | No |
 
-**Total first-time download: ~21 GB** (without adjudicator).
+**Total first-time download: ~65 GB.**
 
 ---
 
@@ -55,7 +54,7 @@ Pick your environment below. After setup, all remaining steps (1–7) are **iden
 
 ### Option A: Google Colab
 
-**Cost:** Free tier (T4 GPU) works. Colab Pro ($10/mo) gives better GPUs and longer sessions.
+**Cost:** Requires Colab Pro+ or Enterprise with A100/H100 access. Free tier T4 will not fit this model.
 
 #### A1. Create a new notebook
 
@@ -63,13 +62,13 @@ Go to [colab.research.google.com](https://colab.research.google.com) → **New N
 
 #### A2. Enable GPU
 
-**Runtime → Change runtime type → T4 GPU** (free) or V100/A100 (Pro).
+**Runtime → Change runtime type → A100 or H100 GPU** (Pro+/Enterprise).
 
 Verify in a cell:
 ```python
 !nvidia-smi
 ```
-You should see a T4 (16 GB), V100, or A100.
+You should see an A100 (40/80 GB) or H100 (80 GB).
 
 #### A3. Clone the repo
 
@@ -94,8 +93,8 @@ for filename in uploaded:
 
 #### A5. Notes for Colab
 
-- Free T4 sessions timeout after ~90 min idle, max ~12 hours total.
-- If T4 runs out of memory on Qwen3-8B, use the quantized model (see [Troubleshooting](#troubleshooting-vllm-out-of-memory-on-t4)).
+- Colab Pro+ sessions timeout after idle. Max runtime varies by plan.
+- Qwen3-235B-A22B requires ~60 GB VRAM. A100 80GB or H100 80GB recommended.
 - All files are lost when the session ends. Download your outputs before disconnecting (see Step 6).
 
 **Now continue to [Step 1: Install the Package](#step-1-install-the-package).** All commands below run in Colab cells with a `!` prefix (e.g., `!pip install ...`).
@@ -108,7 +107,7 @@ for filename in uploaded:
 
 Create or use a cluster with:
 - **Runtime:** Databricks Runtime 14.x+ ML (includes Python 3.10+, PyTorch, CUDA)
-- **Node type:** GPU instance with 16+ GB VRAM (e.g., `Standard_NC6s_v3` on Azure, `g4dn.xlarge` on AWS, `n1-standard-4` + T4 on GCP)
+- **Node type:** GPU instance with 80 GB VRAM (e.g., `Standard_NC24ads_A100_v4` on Azure, `p4d.24xlarge` on AWS, `a2-highgpu-1g` on GCP)
 - **Single node** is fine for testing
 
 #### B2. Clone the repo
@@ -162,7 +161,7 @@ shutil.copy("/dbfs/FileStore/your_protocol.pdf", "data/protocols/your_protocol.p
 #### C1. Requirements
 
 - Python 3.10 or 3.11
-- NVIDIA GPU with 16+ GB VRAM
+- NVIDIA H100 or A100 with 80 GB VRAM
 - CUDA drivers installed (`nvidia-smi` should work)
 
 #### C2. Clone and enter the repo
@@ -236,11 +235,11 @@ huggingface-cli download BAAI/bge-reranker-v2-m3
 ### 2b. LLM model
 
 ```bash
-# Default extractor (~16 GB)
-huggingface-cli download Qwen/Qwen3-8B
+# MoE extractor + adjudicator (~60 GB)
+huggingface-cli download Qwen/Qwen3-235B-A22B
 ```
 
-Skip the 30B adjudicator for first run. We point both endpoints at the 8B model.
+Single model handles both extraction and adjudication — no separate server needed.
 
 ### 2c. Docling models
 
@@ -258,11 +257,9 @@ Without this, Docling auto-downloads on first PDF parse (~30s extra).
 
 | GPU | VRAM | max-model-len | Notes |
 |-----|------|---------------|-------|
-| T4 | 16 GB | `16384` | Tight — use `--gpu-memory-utilization 0.95` |
-| V100 | 16-32 GB | `24576` | Comfortable |
-| A100 | 40-80 GB | `32768` | Full context, plenty of room |
 | H100 | 80 GB | `32768` | Full context, fastest inference |
-| A10G | 24 GB | `24576` | Common on AWS/Databricks |
+| A100 | 80 GB | `32768` | Full context, slightly slower |
+| A100 | 40 GB | `16384` | Tight — may need `--gpu-memory-utilization 0.95` |
 
 ### 3b. Start vLLM
 
@@ -284,21 +281,20 @@ This auto-detects your GPU, applies workarounds, picks `--max-model-len`, and wa
 Options:
 ```bash
 python setup_vllm.py --port 8001                                    # custom port
-python setup_vllm.py --model Qwen/Qwen3-8B-AWQ --quantization awq  # quantized
+python setup_vllm.py --max-model-len 16384                         # reduce context if needed
 python setup_vllm.py --set-env                                      # auto-set env vars
 ```
 
 **Manual start** (separate terminal or notebook background process):
 
 ```bash
-# IMPORTANT: On T4, uninstall flashinfer first (see troubleshooting below)
-vllm serve Qwen/Qwen3-8B \
+vllm serve Qwen/Qwen3-235B-A22B \
     --host 0.0.0.0 \
     --port 8000 \
-    --max-model-len 16384 \
+    --max-model-len 32768 \
     --enable-prefix-caching \
     --dtype auto \
-    --gpu-memory-utilization 0.95
+    --gpu-memory-utilization 0.90
 ```
 
 Adjust `--max-model-len` per the table above.
@@ -310,13 +306,13 @@ import subprocess
 
 vllm_proc = subprocess.Popen(
     [
-        "vllm", "serve", "Qwen/Qwen3-8B",
+        "vllm", "serve", "Qwen/Qwen3-235B-A22B",
         "--host", "0.0.0.0",
         "--port", "8000",
-        "--max-model-len", "16384",       # adjust per GPU
+        "--max-model-len", "32768",       # H100 can handle full context
         "--enable-prefix-caching",
         "--dtype", "auto",
-        "--gpu-memory-utilization", "0.95",
+        "--gpu-memory-utilization", "0.90",
     ],
     stdout=open("vllm_stdout.log", "w"),
     stderr=open("vllm_stderr.log", "w"),
@@ -356,8 +352,8 @@ curl http://localhost:8000/v1/models
 export VLLM_BASE_URL=http://localhost:8000/v1
 export ADJUDICATOR_BASE_URL=http://localhost:8000/v1
 export VLLM_API_KEY=local
-export DEFAULT_MODEL=Qwen/Qwen3-8B
-export ADJUDICATOR_MODEL=Qwen/Qwen3-8B
+export DEFAULT_MODEL=Qwen/Qwen3-235B-A22B
+export ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B
 ```
 
 In a notebook:
@@ -366,23 +362,26 @@ import os
 os.environ["VLLM_BASE_URL"] = "http://localhost:8000/v1"
 os.environ["ADJUDICATOR_BASE_URL"] = "http://localhost:8000/v1"
 os.environ["VLLM_API_KEY"] = "local"
-os.environ["DEFAULT_MODEL"] = "Qwen/Qwen3-8B"
-os.environ["ADJUDICATOR_MODEL"] = "Qwen/Qwen3-8B"
+os.environ["DEFAULT_MODEL"] = "Qwen/Qwen3-235B-A22B"
+os.environ["ADJUDICATOR_MODEL"] = "Qwen/Qwen3-235B-A22B"
 ```
 
-### 3e. Ollama alternative (no CUDA required, slower)
+### 3e. Ollama alternative (not recommended for 235B model)
+
+The Qwen3-235B-A22B model is too large for Ollama on most setups. If you need a lighter
+alternative for testing without an H100, consider running a smaller model via Ollama:
 
 ```bash
 curl -fsSL https://ollama.ai/install.sh | sh
-ollama pull qwen3:8b
+ollama pull qwen3:32b
 
 export VLLM_BASE_URL=http://localhost:11434/v1
 export ADJUDICATOR_BASE_URL=http://localhost:11434/v1
-export DEFAULT_MODEL=qwen3:8b
-export ADJUDICATOR_MODEL=qwen3:8b
+export DEFAULT_MODEL=qwen3:32b
+export ADJUDICATOR_MODEL=qwen3:32b
 ```
 
-**Note:** Ollama supports structured outputs but has not been fully validated for strict schema-constrained extraction. vLLM is the safer default.
+**Note:** Ollama supports structured outputs but has not been fully validated for strict schema-constrained extraction. vLLM with the full 235B MoE model is the recommended setup.
 
 ---
 
@@ -640,32 +639,18 @@ before registering, producing the unhelpful `{}` error.
 Fix: disable V1 and use eager mode:
 ```bash
 export VLLM_USE_V1=0
-vllm serve Qwen/Qwen3-8B --enforce-eager ...
+vllm serve Qwen/Qwen3-235B-A22B --enforce-eager ...
 ```
 
 `setup_vllm.py` sets both of these automatically.
 
-### Troubleshooting: vLLM out of memory on T4
+### Troubleshooting: vLLM out of memory
 
-If the T4 (16 GB) can't fit Qwen3-8B, use the 4-bit quantized version:
+Qwen3-235B-A22B requires ~60 GB VRAM. If you're running low:
 
-```bash
-pip install autoawq
-
-vllm serve Qwen/Qwen3-8B-AWQ \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --max-model-len 16384 \
-    --enable-prefix-caching \
-    --dtype auto \
-    --quantization awq
-```
-
-Then update environment variables:
-```bash
-export DEFAULT_MODEL=Qwen/Qwen3-8B-AWQ
-export ADJUDICATOR_MODEL=Qwen/Qwen3-8B-AWQ
-```
+1. Reduce `--gpu-memory-utilization 0.95` and `--max-model-len 16384`
+2. Ensure no stale GPU processes are running (`nvidia-smi`, then `kill -9 <pid>`)
+3. If using A100 40GB, the model will not fit — use an 80GB GPU
 
 ---
 
@@ -676,18 +661,15 @@ All optional. Sensible defaults are built in.
 ```bash
 # LLM endpoints
 export VLLM_BASE_URL=http://localhost:8000/v1          # Default model
-export ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Adjudicator (same as default for single-model)
+export ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same server (single-model setup)
 export VLLM_API_KEY=local                               # API key
-export DEFAULT_MODEL=Qwen/Qwen3-8B                     # Model name on vLLM
-export ADJUDICATOR_MODEL=Qwen/Qwen3-8B                 # Same for first run
+export DEFAULT_MODEL=Qwen/Qwen3-235B-A22B              # MoE extractor + adjudicator
+export ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B          # Same model
 
 # Retrieval (auto-detected, override if needed)
 export RETRIEVAL_DEVICE=cpu                             # Force CPU for embeddings
 export RETRIEVAL_FP16=false                             # Disable fp16 (required for CPU)
 ```
 
-For dual-model production setup:
-```bash
-export ADJUDICATOR_BASE_URL=http://localhost:8001/v1
-export ADJUDICATOR_MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
-```
+The Qwen3-235B-A22B model is powerful enough for both extraction and adjudication.
+No dual-model setup is needed.

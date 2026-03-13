@@ -10,7 +10,7 @@ Detects GPU compute capability and works around known issues:
 Usage (in a notebook cell or terminal):
     python setup_vllm.py                     # auto-detect everything
     python setup_vllm.py --port 8001         # custom port
-    python setup_vllm.py --model Qwen/Qwen3-8B-AWQ --quantization awq  # quantized
+    python setup_vllm.py --model Qwen/Qwen3-235B-A22B  # MoE (H100)
 """
 
 import argparse
@@ -140,7 +140,7 @@ def wait_for_server(port, timeout=300, interval=5):
 
 def main():
     parser = argparse.ArgumentParser(description="Start vLLM with GPU-aware defaults")
-    parser.add_argument("--model", default="Qwen/Qwen3-8B", help="HuggingFace model ID")
+    parser.add_argument("--model", default="Qwen/Qwen3-235B-A22B", help="HuggingFace model ID")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
     parser.add_argument("--host", default="0.0.0.0", help="Server host")
     parser.add_argument("--max-model-len", type=int, default=None,

@@ -84,9 +84,9 @@ are carried through to downstream consumers via `concept_metadata` on EvidencePa
 **TA packs for synonym expansion.** Not sponsor-specific — TA-level priors.
 Oncology and CV packs included. Add more as needed.
 
-**Adjudicator routing.** Low confidence → larger model on separate endpoint for second pass.
-Qwen3-8B default (port 8000), Qwen3-30B-A3B adjudicator (port 8001). Same interface, different model.
-If the adjudicator is unavailable, the first-pass result is kept (graceful fallback).
+**Single-model setup.** Qwen3-235B-A22B (MoE, ~22B active params) on a single vLLM server (port 8000).
+Powerful enough for both extraction and adjudication — no separate adjudicator needed.
+If a second endpoint is configured, the adjudicator path is still supported (graceful fallback).
 
 **Model-agnostic client.** LocalModelClient uses OpenAI-compatible interface.
 Swap to GPT-4o = change env vars, zero code changes.
@@ -175,27 +175,20 @@ requirements.txt                # Dependencies with lower-bound versions
 # 1. Install as editable package
 pip install -e .
 
-# 2. Download models (one-time, ~20GB total)
-hf download Qwen/Qwen3-8B
-hf download Qwen/Qwen3-30B-A3B-Instruct-2507  # adjudicator (optional)
+# 2. Download models (one-time)
+hf download Qwen/Qwen3-235B-A22B              # MoE LLM (~60 GB, fits on H100 80GB)
 hf download BAAI/bge-m3
 hf download BAAI/bge-reranker-v2-m3
 
 # 3. Prefetch Docling models for offline use
 python -c "from docling.utils.model_downloader import download_models; download_models()"
 
-# 4. Start vLLM servers
-# Default model (port 8000):
-vllm serve Qwen/Qwen3-8B \
+# 4. Start vLLM server (single model handles both extraction and adjudication)
+vllm serve Qwen/Qwen3-235B-A22B \
     --host 0.0.0.0 --port 8000 \
     --max-model-len 32768 \
-    --enable-prefix-caching
-
-# Adjudicator model (port 8001, optional):
-vllm serve Qwen/Qwen3-30B-A3B-Instruct-2507 \
-    --host 0.0.0.0 --port 8001 \
-    --max-model-len 32768 \
-    --enable-prefix-caching
+    --enable-prefix-caching \
+    --gpu-memory-utilization 0.90
 
 # 5. Run on a protocol
 python -m protocol_spec_assist.workflows.protocol_run \
@@ -210,10 +203,10 @@ python -m protocol_spec_assist.workflows.protocol_run \
 
 ```bash
 VLLM_BASE_URL=http://localhost:8000/v1         # Default model server
-ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same as default for single-model setup
+ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same server (single-model setup)
 VLLM_API_KEY=local                              # API key (default: local)
-DEFAULT_MODEL=Qwen/Qwen3-8B                    # Main extractor
-ADJUDICATOR_MODEL=Qwen/Qwen3-8B               # Same model for first run
+DEFAULT_MODEL=Qwen/Qwen3-235B-A22B             # MoE extractor + adjudicator
+ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B        # Same model
 
 # Retrieval device control (auto-detected by default)
 RETRIEVAL_DEVICE=cpu                            # Force CPU for embeddings/reranker
@@ -249,7 +242,7 @@ Each run produces 4 artifacts in `data/outputs/`:
 
 ### Fixes
 9. **Version consistency** — all finders, schemas, and spec at v0.3.0
-10. **Ollama model name** — fixed to `qwen3:8b` (was `qwen2.5:14b`)
+10. **Default model** — upgraded to `Qwen/Qwen3-235B-A22B` MoE for H100
 11. **HuggingFace CLI** — updated to `hf download` (was `huggingface-cli download`)
 
 ---
