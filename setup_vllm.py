@@ -69,7 +69,7 @@ def pick_max_model_len(gpu_name, cap_major):
     """Choose max-model-len based on GPU VRAM tier."""
     name_lower = (gpu_name or "").lower()
     if "a100" in name_lower or "h100" in name_lower:
-        return 32768
+        return 16384
     if "v100" in name_lower or "a10" in name_lower or "rtx" in name_lower:
         return 24576
     if "t4" in name_lower or cap_major == 7:
@@ -105,7 +105,7 @@ def main():
     parser.add_argument("--max-model-len", type=int, default=None,
                         help="Max sequence length (auto-detected from GPU if omitted)")
     parser.add_argument("--quantization", default=None, help="Quantization method (e.g. awq)")
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.95)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
     parser.add_argument("--no-wait", action="store_true", help="Don't wait for server to be ready")
     parser.add_argument("--set-env", action="store_true",
                         help="Set VLLM_BASE_URL and related env vars in current process")
