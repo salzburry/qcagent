@@ -27,7 +27,7 @@ class ModelConfig(BaseModel):
     adjudicator_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"  # harder cases
     vision_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"    # scanned pages
     temperature: float = 0.0                              # deterministic extraction
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     max_retries: int = 2                                  # retry on transient failures
     timeout: float = 120.0                                # seconds
 
