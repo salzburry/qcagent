@@ -84,9 +84,11 @@ are carried through to downstream consumers via `concept_metadata` on EvidencePa
 **TA packs for synonym expansion.** Not sponsor-specific — TA-level priors.
 Oncology and CV packs included. Add more as needed.
 
-**Single-model setup.** Qwen3-235B-A22B (MoE, ~22B active params) on a single vLLM server (port 8000).
-Powerful enough for both extraction and adjudication — no separate adjudicator needed.
-If a second endpoint is configured, the adjudicator path is still supported (graceful fallback).
+**Tiered model setup.** Two supported tiers:
+- `colab_a100` — Qwen3-14B (base) on A100 40GB. Good extraction quality (~70%). Budget-friendly for Colab.
+- `h100` — Qwen3-235B-A22B (MoE, ~22B active params) on H100 80GB. Best quality.
+Set `MODEL_TIER=colab_a100` or `MODEL_TIER=h100` to auto-configure. Both extraction and adjudication
+run on the same server — no separate adjudicator needed.
 
 **Model-agnostic client.** LocalModelClient uses OpenAI-compatible interface.
 Swap to GPT-4o = change env vars, zero code changes.
@@ -171,30 +173,43 @@ requirements.txt                # Dependencies with lower-bound versions
 
 ## Setup
 
+### Quick start — Colab A100 40GB
+
 ```bash
-# 1. Install as editable package
+# 1. Install
 pip install -e .
 
-# 2. Download models (one-time)
-hf download Qwen/Qwen3-235B-A22B              # MoE LLM (~60 GB, fits on H100 80GB)
+# 2. Download models (Colab: saves to Google Drive)
+python colab_setup.py --download-models --tier colab_a100
+
+# 3. Start vLLM (auto-detects GPU, picks Qwen3-14B for 40GB)
+python setup_vllm.py --set-env
+
+# 4. Run on a protocol
+python -m protocol_spec_assist.workflows.protocol_run \
+    data/protocols/PROTOCOL.pdf --ta oncology
+```
+
+### Full setup — H100 80GB
+
+```bash
+# 1. Install
+pip install -e .
+
+# 2. Download models
+hf download Qwen/Qwen3-235B-A22B              # MoE LLM (~60 GB)
 hf download BAAI/bge-m3
 hf download BAAI/bge-reranker-v2-m3
 
 # 3. Prefetch Docling models for offline use
 python -c "from docling.utils.model_downloader import download_models; download_models()"
 
-# 4. Start vLLM server (single model handles both extraction and adjudication)
-vllm serve Qwen/Qwen3-235B-A22B \
-    --host 0.0.0.0 --port 8000 \
-    --max-model-len 32768 \
-    --enable-prefix-caching \
-    --gpu-memory-utilization 0.90
+# 4. Start vLLM server
+python setup_vllm.py --tier h100 --set-env
 
 # 5. Run on a protocol
 python -m protocol_spec_assist.workflows.protocol_run \
-    data/protocols/PROTOCOL.pdf \
-    --ta oncology \
-    --output-dir data/outputs/
+    data/protocols/PROTOCOL.pdf --ta oncology --output-dir data/outputs/
 ```
 
 ---
@@ -202,11 +217,15 @@ python -m protocol_spec_assist.workflows.protocol_run \
 ## Environment Variables
 
 ```bash
+# Easiest: set the tier and everything else auto-configures
+MODEL_TIER=colab_a100                           # colab_a100 | colab_a100_single | h100
+
+# Or override individually:
 VLLM_BASE_URL=http://localhost:8000/v1         # Default model server
 ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same server (single-model setup)
 VLLM_API_KEY=local                              # API key (default: local)
-DEFAULT_MODEL=Qwen/Qwen3-235B-A22B             # MoE extractor + adjudicator
-ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B        # Same model
+DEFAULT_MODEL=Qwen/Qwen3-14B                   # Base extractor (or Qwen3-235B-A22B)
+ADJUDICATOR_MODEL=Qwen/Qwen3-14B              # Adjudicator
 
 # Retrieval device control (auto-detected by default)
 RETRIEVAL_DEVICE=cpu                            # Force CPU for embeddings/reranker
@@ -244,6 +263,10 @@ Each run produces 4 artifacts in `data/outputs/`:
 9. **Version consistency** — all finders, schemas, and spec at v0.3.0
 10. **Default model** — upgraded to `Qwen/Qwen3-235B-A22B` MoE for H100
 11. **HuggingFace CLI** — updated to `hf download` (was `huggingface-cli download`)
+12. **Model tiers** — `MODEL_TIER` env var for one-line GPU config (`colab_a100` / `h100`)
+13. **Colab setup** — `colab_setup.py` handles Drive mounting, model download, compute budgeting
+14. **GPU auto-detection** — `setup_vllm.py` auto-selects model based on VRAM (14B for 40GB, 235B for 80GB)
+15. **Google Drive integration** — models persist on Drive across Colab sessions (download once)
 
 ---
 

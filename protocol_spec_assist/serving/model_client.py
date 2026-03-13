@@ -2,6 +2,11 @@
 Model serving abstraction.
 Local: vLLM with structured outputs (JSON schema constrained).
 Designed so swapping to OpenAI later = change config, not code.
+
+Model tiers:
+  - "colab_a100"  → Qwen3-14B (base) + Qwen3-8B (adjudicator)  — fits A100 40GB
+  - "h100"        → Qwen3-235B-A22B (base + adjudicator)         — H100 80GB
+  - Custom        → set via env vars (DEFAULT_MODEL, ADJUDICATOR_MODEL)
 """
 
 from __future__ import annotations
@@ -17,6 +22,48 @@ T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
+# ── Model tier presets ────────────────────────────────────────────────────────
+
+MODEL_TIERS = {
+    "colab_a100": {
+        "default_model": "Qwen/Qwen3-14B",
+        "adjudicator_model": "Qwen/Qwen3-8B",
+        "vision_model": "Qwen/Qwen2.5-VL-7B-Instruct",
+        "max_model_len": 16384,
+        "gpu_memory_utilization": 0.95,
+        "description": "Colab A100 40GB — Qwen3-14B (base) + Qwen3-8B (adjudicator)",
+    },
+    "colab_a100_single": {
+        "default_model": "Qwen/Qwen3-14B",
+        "adjudicator_model": "Qwen/Qwen3-14B",
+        "vision_model": "Qwen/Qwen2.5-VL-7B-Instruct",
+        "max_model_len": 16384,
+        "gpu_memory_utilization": 0.95,
+        "description": "Colab A100 40GB — Qwen3-14B only (single model, simpler)",
+    },
+    "h100": {
+        "default_model": "Qwen/Qwen3-235B-A22B",
+        "adjudicator_model": "Qwen/Qwen3-235B-A22B",
+        "vision_model": "Qwen/Qwen2.5-VL-7B-Instruct",
+        "max_model_len": 32768,
+        "gpu_memory_utilization": 0.90,
+        "description": "H100 80GB — Qwen3-235B-A22B MoE (best quality)",
+    },
+}
+
+
+def get_tier_name() -> str:
+    """Resolve which model tier to use from environment or auto-detect."""
+    tier = os.environ.get("MODEL_TIER", "").lower()
+    if tier in MODEL_TIERS:
+        return tier
+    # If user set DEFAULT_MODEL explicitly, use custom config (no tier)
+    if os.environ.get("DEFAULT_MODEL"):
+        return ""
+    # Default to h100 for backwards compatibility
+    return "h100"
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 class ModelConfig(BaseModel):
@@ -30,6 +77,7 @@ class ModelConfig(BaseModel):
     max_tokens: int = 16384
     max_retries: int = 2                                  # retry on transient failures
     timeout: float = 120.0                                # seconds
+    model_tier: str = ""                                  # resolved tier name
 
 
 _config: Optional[ModelConfig] = None
@@ -37,6 +85,16 @@ _config: Optional[ModelConfig] = None
 def get_config() -> ModelConfig:
     global _config
     if _config is None:
+        tier_name = get_tier_name()
+        tier = MODEL_TIERS.get(tier_name, {})
+
+        default_model = os.environ.get(
+            "DEFAULT_MODEL", tier.get("default_model", "Qwen/Qwen3-235B-A22B")
+        )
+        adjudicator_model = os.environ.get(
+            "ADJUDICATOR_MODEL", tier.get("adjudicator_model", "Qwen/Qwen3-235B-A22B")
+        )
+
         _config = ModelConfig(
             default_base_url=os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1"),
             adjudicator_base_url=os.environ.get(
@@ -44,9 +102,14 @@ def get_config() -> ModelConfig:
                 os.environ.get("VLLM_BASE_URL", "http://localhost:8001/v1"),
             ),
             api_key=os.environ.get("VLLM_API_KEY", "local"),
-            default_model=os.environ.get("DEFAULT_MODEL", "Qwen/Qwen3-235B-A22B"),
-            adjudicator_model=os.environ.get("ADJUDICATOR_MODEL", "Qwen/Qwen3-235B-A22B"),
+            default_model=default_model,
+            adjudicator_model=adjudicator_model,
+            model_tier=tier_name,
         )
+        if tier_name:
+            logger.info(f"Model tier: {tier_name} — {tier.get('description', '')}")
+        else:
+            logger.info(f"Custom model config — base={default_model}, adj={adjudicator_model}")
     return _config
 
 
@@ -222,9 +285,21 @@ class LocalModelClient:
 # ── vLLM startup helper ───────────────────────────────────────────────────────
 
 VLLM_START_COMMANDS = {
-    "qwen3-235b-a22b": """
-# Start vLLM server (run in terminal before using the pipeline):
-# Qwen3-235B-A22B is a Mixture-of-Experts model (~22B active params, fits on H100 80GB)
+    "colab_a100": """
+# Colab A100 40GB — two models on same server via vLLM
+# Base: Qwen3-14B, Adjudicator: Qwen3-8B (load 14B on vLLM, 8B on separate port or same)
+# Simplest: run Qwen3-14B as single model for both roles
+vllm serve Qwen/Qwen3-14B \\
+    --host 0.0.0.0 \\
+    --port 8000 \\
+    --max-model-len 16384 \\
+    --enable-prefix-caching \\
+    --dtype auto \\
+    --gpu-memory-utilization 0.95 \\
+    --enforce-eager
+""",
+    "h100": """
+# H100 80GB — Qwen3-235B-A22B MoE (~22B active params)
 vllm serve Qwen/Qwen3-235B-A22B \\
     --host 0.0.0.0 \\
     --port 8000 \\
@@ -236,5 +311,9 @@ vllm serve Qwen/Qwen3-235B-A22B \\
 """,
 }
 
-def print_startup_instructions():
-    print(VLLM_START_COMMANDS["qwen3-235b-a22b"])
+def print_startup_instructions(tier: str = ""):
+    tier = tier or get_tier_name() or "h100"
+    if tier in VLLM_START_COMMANDS:
+        print(VLLM_START_COMMANDS[tier])
+    else:
+        print(VLLM_START_COMMANDS["h100"])
