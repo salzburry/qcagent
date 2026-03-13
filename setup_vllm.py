@@ -65,6 +65,47 @@ def fix_flashinfer_for_t4():
     print("[setup_vllm] flashinfer removed. vLLM will use a compatible attention backend.")
 
 
+def kill_stale_gpu_processes():
+    """Kill leftover vLLM / python processes occupying the GPU."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-compute-apps=pid,process_name",
+             "--format=csv,noheader,nounits"],
+            text=True,
+        ).strip()
+    except Exception:
+        return
+    if not out:
+        print("[setup_vllm] GPU is free — no stale processes.")
+        return
+    for line in out.split("\n"):
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        pid = parts[0].strip()
+        name = parts[1].strip()
+        print(f"[setup_vllm] Killing stale GPU process: PID {pid} ({name})")
+        try:
+            subprocess.run(["kill", "-9", pid], capture_output=True)
+        except Exception:
+            pass
+    # Give GPU a moment to reclaim memory
+    time.sleep(3)
+    print("[setup_vllm] Stale GPU processes cleaned up.")
+
+
+def get_gpu_free_memory_gb():
+    """Return free GPU memory in GiB, or None."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            text=True,
+        ).strip().split("\n")[0]
+        return int(out.strip()) / 1024  # MiB → GiB
+    except Exception:
+        return None
+
+
 def pick_max_model_len(gpu_name, cap_major):
     """Choose max-model-len based on GPU VRAM tier."""
     name_lower = (gpu_name or "").lower()
@@ -123,6 +164,18 @@ def main():
     # ── Apply T4 workaround ─────────────────────────────────────────
     if cap_major < 8:
         fix_flashinfer_for_t4()
+
+    # ── Kill stale GPU processes from previous runs ────────────────
+    kill_stale_gpu_processes()
+
+    # ── Verify GPU memory is available ──────────────────────────────
+    free_gb = get_gpu_free_memory_gb()
+    if free_gb is not None:
+        print(f"[setup_vllm] Free GPU memory: {free_gb:.1f} GiB")
+        if free_gb < 10:
+            print(f"[setup_vllm] ERROR: Only {free_gb:.1f} GiB free. Need at least ~16 GiB.")
+            print("[setup_vllm] Run: nvidia-smi  — to see what's using GPU memory.")
+            sys.exit(1)
 
     # ── Choose max-model-len ────────────────────────────────────────
     max_model_len = args.max_model_len or pick_max_model_len(gpu_name, cap_major)
