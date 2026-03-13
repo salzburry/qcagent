@@ -27,7 +27,7 @@ class ModelConfig(BaseModel):
     adjudicator_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"  # harder cases
     vision_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"    # scanned pages
     temperature: float = 0.0                              # deterministic extraction
-    max_tokens: int = 2048
+    max_tokens: int = 4096
     max_retries: int = 2                                  # retry on transient failures
     timeout: float = 120.0                                # seconds
 
@@ -152,9 +152,17 @@ class LocalModelClient:
                     },
                 )
 
-                raw = response.choices[0].message.content
+                choice = response.choices[0]
+                raw = choice.message.content
                 if not raw or not raw.strip():
                     raise ValueError("Empty response content from model")
+
+                # Detect truncated output (length finish instead of stop)
+                if getattr(choice, "finish_reason", None) == "length":
+                    raise ValueError(
+                        f"Response truncated (finish_reason=length, "
+                        f"{len(raw)} chars). Increase max_tokens."
+                    )
 
                 parsed = schema.model_validate_json(raw)
                 return ExtractionResult(
