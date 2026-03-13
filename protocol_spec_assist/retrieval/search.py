@@ -66,7 +66,13 @@ class EmbeddingModel:
             try:
                 from FlagEmbedding import BGEM3FlagModel
                 _device, use_fp16 = _detect_device_and_fp16()
-                self._model = BGEM3FlagModel(DENSE_MODEL, device=_device, use_fp16=use_fp16)
+                self._model = BGEM3FlagModel(
+                    DENSE_MODEL, device=_device, use_fp16=use_fp16,
+                    devices=[_device],   # force encode to stay on this device
+                )
+                # Pin target_devices so encode_single_device won't auto-detect CUDA
+                if hasattr(self._model, 'target_devices'):
+                    self._model.target_devices = [_device]
                 print(f"[Embeddings] Loaded {DENSE_MODEL} (device={_device}, fp16={use_fp16})")
             except ImportError:
                 raise ImportError(
@@ -100,7 +106,10 @@ class Reranker:
             try:
                 from FlagEmbedding import FlagReranker
                 _device, use_fp16 = _detect_device_and_fp16()
-                self._model = FlagReranker(RERANKER_MODEL, device=_device, use_fp16=use_fp16)
+                self._model = FlagReranker(
+                    RERANKER_MODEL, device=_device, use_fp16=use_fp16,
+                    devices=[_device],   # force reranker to stay on this device
+                )
                 print(f"[Reranker] Loaded {RERANKER_MODEL} (device={_device}, fp16={use_fp16})")
             except ImportError:
                 raise ImportError(
