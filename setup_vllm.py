@@ -69,7 +69,7 @@ def pick_max_model_len(gpu_name, cap_major):
     """Choose max-model-len based on GPU VRAM tier."""
     name_lower = (gpu_name or "").lower()
     if "a100" in name_lower or "h100" in name_lower:
-        return 16384
+        return 32768
     if "v100" in name_lower or "a10" in name_lower or "rtx" in name_lower:
         return 24576
     if "t4" in name_lower or cap_major == 7:
@@ -105,7 +105,7 @@ def main():
     parser.add_argument("--max-model-len", type=int, default=None,
                         help="Max sequence length (auto-detected from GPU if omitted)")
     parser.add_argument("--quantization", default=None, help="Quantization method (e.g. awq)")
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.95)
     parser.add_argument("--no-wait", action="store_true", help="Don't wait for server to be ready")
     parser.add_argument("--set-env", action="store_true",
                         help="Set VLLM_BASE_URL and related env vars in current process")
@@ -138,16 +138,24 @@ def main():
         "--enable-prefix-caching",
         "--dtype", "auto",
         "--gpu-memory-utilization", str(args.gpu_memory_utilization),
+        "--enforce-eager",  # skip torch.compile — avoids Dynamo crash in V1 engine
     ]
     if args.quantization:
         cmd.extend(["--quantization", args.quantization])
 
+    # Disable torch.compile which causes V1 engine core crashes
+    env = os.environ.copy()
+    env["VLLM_USE_V1"] = "1"
+    env["VLLM_TORCH_COMPILE_LEVEL"] = "0"
+
     print(f"[setup_vllm] Starting: {' '.join(cmd)}")
 
-    # ── Launch ──────────────────────────────────────────────────────
+    # ── Launch (stderr tee'd to file + console) ─────────────────────
     log_out = open("vllm_stdout.log", "w")
     log_err = open("vllm_stderr.log", "w")
-    proc = subprocess.Popen(cmd, stdout=log_out, stderr=log_err)
+    proc = subprocess.Popen(
+        cmd, stdout=log_out, stderr=log_err, env=env,
+    )
     print(f"[setup_vllm] vLLM starting (PID: {proc.pid})")
     print(f"[setup_vllm] Logs: tail -f vllm_stderr.log")
 
@@ -155,7 +163,16 @@ def main():
     if not args.no_wait:
         if not wait_for_server(args.port):
             print("[setup_vllm] ERROR: vLLM failed to start within 5 minutes.")
-            print("[setup_vllm] Check logs: tail -50 vllm_stderr.log")
+            # Dump last 30 lines of stderr for diagnosis
+            print("[setup_vllm] === Last 30 lines of vllm_stderr.log ===")
+            try:
+                log_err.flush()
+                with open("vllm_stderr.log") as f:
+                    lines = f.readlines()
+                    for line in lines[-30:]:
+                        print(f"  {line.rstrip()}")
+            except Exception:
+                print("[setup_vllm] (could not read log)")
             # Check if process died
             retcode = proc.poll()
             if retcode is not None:
