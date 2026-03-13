@@ -261,6 +261,7 @@ Without this, Docling auto-downloads on first PDF parse (~30s extra).
 | T4 | 16 GB | `16384` | Tight — use `--gpu-memory-utilization 0.95` |
 | V100 | 16-32 GB | `24576` | Comfortable |
 | A100 | 40-80 GB | `32768` | Full context, plenty of room |
+| H100 | 80 GB | `32768` | Full context, fastest inference |
 | A10G | 24 GB | `24576` | Common on AWS/Databricks |
 
 ### 3b. Start vLLM
@@ -271,7 +272,14 @@ Without this, Docling auto-downloads on first PDF parse (~30s extra).
 python setup_vllm.py
 ```
 
-This auto-detects your GPU, applies workarounds (see [T4 troubleshooting](#troubleshooting-vllm-crashes-on-t4-flashinfer)), picks `--max-model-len`, and waits for the server to be ready.
+This auto-detects your GPU, applies workarounds, picks `--max-model-len`, and waits for the server to be ready.
+
+**What `setup_vllm.py` does automatically:**
+- Kills stale GPU processes from previous crashed runs (prevents "not enough free memory" errors)
+- Checks free GPU memory before launching and aborts early with a clear message if insufficient
+- Applies T4/sm_75 flashinfer workaround (see [T4 troubleshooting](#troubleshooting-vllm-crashes-on-t4-flashinfer))
+- Uses `--enforce-eager` and `VLLM_USE_V1=0` to avoid V1 engine core crashes
+- Dumps last 80 lines of stderr on failure for diagnosis
 
 Options:
 ```bash
@@ -586,6 +594,8 @@ python -m protocol_spec_assist.workflows.protocol_run --help
 | `ImportError: No module named 'pydantic'` | Run `pip install -e ".[dev]"` |
 | `ImportError: docling` | `pip install docling` — or ignore, pipeline auto-falls-back to PyMuPDF |
 | `CUDA out of memory` | Reduce `--max-model-len` or use quantized model (see below) |
+| `Free memory on device cuda:0 ... less than desired` | Stale GPU processes from a previous run. `setup_vllm.py` auto-kills these; for manual runs: `nvidia-smi` then `kill -9 <pid>` |
+| `Engine core initialization failed. Failed core proc(s): {}` | V1 engine crash. `setup_vllm.py` avoids this with `VLLM_USE_V1=0`. For manual runs: `export VLLM_USE_V1=0` before starting vLLM |
 | `Empty response content from model` | Auto-retries 2x. If persistent, check `tail -30 vllm_stderr.log` |
 | Empty text from parsed PDF | Your PDF is scanned. OCR it first (Step 4) |
 | Slow first run | One-time model downloads. Subsequent runs are faster |
@@ -605,6 +615,35 @@ pip uninstall -y flashinfer flashinfer-python
 
 vLLM will automatically fall back to a compatible attention backend. The `setup_vllm.py` script
 does this automatically when it detects a T4 or other sm_75 GPU.
+
+### Troubleshooting: vLLM "Engine core initialization failed" (H100/A100/any GPU)
+
+If vLLM crashes with `RuntimeError: Engine core initialization failed. Failed core proc(s): {}`,
+this is typically caused by one of two things:
+
+**1. Stale GPU processes from a previous run** — the most common cause.
+
+Check with `nvidia-smi`. If you see python/vllm processes using GPU memory, kill them:
+```bash
+# See what's on the GPU
+nvidia-smi
+
+# Kill stale processes
+kill -9 <pid>
+```
+
+`setup_vllm.py` does this automatically before every launch.
+
+**2. V1 engine multiprocess crash** — the vLLM V1 engine spawns a subprocess that can die
+before registering, producing the unhelpful `{}` error.
+
+Fix: disable V1 and use eager mode:
+```bash
+export VLLM_USE_V1=0
+vllm serve Qwen/Qwen3-8B --enforce-eager ...
+```
+
+`setup_vllm.py` sets both of these automatically.
 
 ### Troubleshooting: vLLM out of memory on T4
 

@@ -65,6 +65,47 @@ def fix_flashinfer_for_t4():
     print("[setup_vllm] flashinfer removed. vLLM will use a compatible attention backend.")
 
 
+def kill_stale_gpu_processes():
+    """Kill leftover vLLM / python processes occupying the GPU."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-compute-apps=pid,process_name",
+             "--format=csv,noheader,nounits"],
+            text=True,
+        ).strip()
+    except Exception:
+        return
+    if not out:
+        print("[setup_vllm] GPU is free — no stale processes.")
+        return
+    for line in out.split("\n"):
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        pid = parts[0].strip()
+        name = parts[1].strip()
+        print(f"[setup_vllm] Killing stale GPU process: PID {pid} ({name})")
+        try:
+            subprocess.run(["kill", "-9", pid], capture_output=True)
+        except Exception:
+            pass
+    # Give GPU a moment to reclaim memory
+    time.sleep(3)
+    print("[setup_vllm] Stale GPU processes cleaned up.")
+
+
+def get_gpu_free_memory_gb():
+    """Return free GPU memory in GiB, or None."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            text=True,
+        ).strip().split("\n")[0]
+        return int(out.strip()) / 1024  # MiB → GiB
+    except Exception:
+        return None
+
+
 def pick_max_model_len(gpu_name, cap_major):
     """Choose max-model-len based on GPU VRAM tier."""
     name_lower = (gpu_name or "").lower()
@@ -124,6 +165,18 @@ def main():
     if cap_major < 8:
         fix_flashinfer_for_t4()
 
+    # ── Kill stale GPU processes from previous runs ────────────────
+    kill_stale_gpu_processes()
+
+    # ── Verify GPU memory is available ──────────────────────────────
+    free_gb = get_gpu_free_memory_gb()
+    if free_gb is not None:
+        print(f"[setup_vllm] Free GPU memory: {free_gb:.1f} GiB")
+        if free_gb < 10:
+            print(f"[setup_vllm] ERROR: Only {free_gb:.1f} GiB free. Need at least ~16 GiB.")
+            print("[setup_vllm] Run: nvidia-smi  — to see what's using GPU memory.")
+            sys.exit(1)
+
     # ── Choose max-model-len ────────────────────────────────────────
     max_model_len = args.max_model_len or pick_max_model_len(gpu_name, cap_major)
     print(f"[setup_vllm] Using --max-model-len {max_model_len}")
@@ -143,10 +196,10 @@ def main():
     if args.quantization:
         cmd.extend(["--quantization", args.quantization])
 
-    # Disable torch.compile which causes V1 engine core crashes
+    # Disable V1 multiprocess engine — its core subprocess crashes on many
+    # setups with "Failed core proc(s): {}".  V0 is single-process and stable.
     env = os.environ.copy()
-    env["VLLM_USE_V1"] = "1"
-    env["VLLM_TORCH_COMPILE_LEVEL"] = "0"
+    env["VLLM_USE_V1"] = "0"
 
     print(f"[setup_vllm] Starting: {' '.join(cmd)}")
 
@@ -163,13 +216,13 @@ def main():
     if not args.no_wait:
         if not wait_for_server(args.port):
             print("[setup_vllm] ERROR: vLLM failed to start within 5 minutes.")
-            # Dump last 30 lines of stderr for diagnosis
-            print("[setup_vllm] === Last 30 lines of vllm_stderr.log ===")
+            # Dump last 80 lines of stderr for diagnosis (root cause is above wrapper)
+            print("[setup_vllm] === Last 80 lines of vllm_stderr.log ===")
             try:
                 log_err.flush()
                 with open("vllm_stderr.log") as f:
                     lines = f.readlines()
-                    for line in lines[-30:]:
+                    for line in lines[-80:]:
                         print(f"  {line.rstrip()}")
             except Exception:
                 print("[setup_vllm] (could not read log)")
