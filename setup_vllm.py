@@ -143,10 +143,10 @@ def main():
     if args.quantization:
         cmd.extend(["--quantization", args.quantization])
 
-    # Disable torch.compile which causes V1 engine core crashes
+    # Disable V1 multiprocess engine — its core subprocess crashes on many
+    # setups with "Failed core proc(s): {}".  V0 is single-process and stable.
     env = os.environ.copy()
-    env["VLLM_USE_V1"] = "1"
-    env["VLLM_TORCH_COMPILE_LEVEL"] = "0"
+    env["VLLM_USE_V1"] = "0"
 
     print(f"[setup_vllm] Starting: {' '.join(cmd)}")
 
@@ -163,13 +163,13 @@ def main():
     if not args.no_wait:
         if not wait_for_server(args.port):
             print("[setup_vllm] ERROR: vLLM failed to start within 5 minutes.")
-            # Dump last 30 lines of stderr for diagnosis
-            print("[setup_vllm] === Last 30 lines of vllm_stderr.log ===")
+            # Dump last 80 lines of stderr for diagnosis (root cause is above wrapper)
+            print("[setup_vllm] === Last 80 lines of vllm_stderr.log ===")
             try:
                 log_err.flush()
                 with open("vllm_stderr.log") as f:
                     lines = f.readlines()
-                    for line in lines[-30:]:
+                    for line in lines[-80:]:
                         print(f"  {line.rstrip()}")
             except Exception:
                 print("[setup_vllm] (could not read log)")
