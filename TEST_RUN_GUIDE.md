@@ -265,9 +265,25 @@ Without this, Docling auto-downloads on first PDF parse (~30s extra).
 
 ### 3b. Start vLLM
 
-**In a separate terminal** (or background process in a notebook):
+**Recommended: use the setup script** (handles T4 compatibility automatically):
 
 ```bash
+python setup_vllm.py
+```
+
+This auto-detects your GPU, applies workarounds (see [T4 troubleshooting](#troubleshooting-vllm-crashes-on-t4-flashinfer)), picks `--max-model-len`, and waits for the server to be ready.
+
+Options:
+```bash
+python setup_vllm.py --port 8001                                    # custom port
+python setup_vllm.py --model Qwen/Qwen3-8B-AWQ --quantization awq  # quantized
+python setup_vllm.py --set-env                                      # auto-set env vars
+```
+
+**Manual start** (separate terminal or notebook background process):
+
+```bash
+# IMPORTANT: On T4, uninstall flashinfer first (see troubleshooting below)
 vllm serve Qwen/Qwen3-8B \
     --host 0.0.0.0 \
     --port 8000 \
@@ -575,6 +591,20 @@ python -m protocol_spec_assist.workflows.protocol_run --help
 | Slow first run | One-time model downloads. Subsequent runs are faster |
 | `No evidence candidates found` | Expected for some concepts. Check QC output |
 | Adjudicator unavailable warning | Safe to ignore. Both endpoints point to same model |
+
+### Troubleshooting: vLLM crashes on T4 (flashinfer)
+
+If vLLM crashes on T4 with `DSLRuntimeError: ICE` or `NVVM Compilation Error`, this is a known
+incompatibility between flashinfer's CUTLASS DSL and the T4's sm_75 architecture (vLLM >=0.17).
+
+**Fix:** Uninstall flashinfer before starting vLLM:
+
+```bash
+pip uninstall -y flashinfer flashinfer-python
+```
+
+vLLM will automatically fall back to a compatible attention backend. The `setup_vllm.py` script
+does this automatically when it detects a T4 or other sm_75 GPU.
 
 ### Troubleshooting: vLLM out of memory on T4
 
