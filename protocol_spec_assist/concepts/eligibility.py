@@ -30,7 +30,7 @@ PROMPT_VERSION = "0.4.0"
 
 class CriterionInventory(BaseModel):
     """Pass 1: lightweight inventory of all criteria found."""
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step: scan the protocol text for eligibility criteria. "
         "List the distinct criteria you can identify before structuring them."
     )
@@ -46,7 +46,7 @@ class CriterionInventory(BaseModel):
     criteria: list[CriterionStub]
     contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT_INVENTORY_INC = """You are an expert RWE protocol analyst.
@@ -131,7 +131,7 @@ Rules:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class InclusionCriteriaExtraction(BaseModel):
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the eligibility criteria in the protocol text. "
         "Identify key inclusion/exclusion passages and assess how they map to operational criteria."
     )
@@ -158,11 +158,11 @@ class InclusionCriteriaExtraction(BaseModel):
     criteria: list[CriterionExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ExclusionCriteriaExtraction(BaseModel):
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the eligibility criteria in the protocol text. "
         "Identify key inclusion/exclusion passages and assess how they map to operational criteria."
     )
@@ -189,7 +189,7 @@ class ExclusionCriteriaExtraction(BaseModel):
     criteria: list[CriterionExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -32,7 +32,7 @@ PROMPT_VERSION = "0.5.0"
 class SourceDataPrepExtraction(BaseModel):
     """Schema for source data preparation issue extraction."""
 
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about data preparation issues. "
         "Consider what the protocol requires vs what the data source provides, "
         "and identify gaps, mapping needs, and derivation challenges."
@@ -60,7 +60,7 @@ class SourceDataPrepExtraction(BaseModel):
         confidence: float = Field(ge=0.0, le=1.0)
 
     issues: list[PrepIssue]
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT = """You are an expert RWE data engineer building a program specification.

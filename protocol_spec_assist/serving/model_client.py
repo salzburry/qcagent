@@ -251,7 +251,11 @@ class LocalModelClient:
                 raw = choice.message.content
 
                 # Strip <think>...</think> blocks (Qwen3 reasoning traces)
+                think_text = ""
                 if raw and "<think>" in raw:
+                    think_match = re.search(r"<think>(.*?)</think>", raw, flags=re.DOTALL)
+                    if think_match:
+                        think_text = think_match.group(1).strip()
                     raw = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
 
                 if not raw or not raw.strip():
@@ -265,6 +269,10 @@ class LocalModelClient:
                     )
 
                 parsed = schema.model_validate_json(raw)
+
+                # Back-fill chain_of_thought from <think> block if empty
+                if think_text and hasattr(parsed, "chain_of_thought") and not parsed.chain_of_thought:
+                    parsed.chain_of_thought = think_text
                 return ExtractionResult(
                     parsed=parsed,
                     model_used=model,

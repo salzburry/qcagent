@@ -50,7 +50,7 @@ STATIC_TEMPLATE = [
 
 
 class LabVariablesExtraction(BaseModel):
-    chain_of_thought: str = Field(description="Think step by step about the lab variables in the protocol text. Identify which lab variables are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
+    chain_of_thought: str = Field(default="", description="Think step by step about the lab variables in the protocol text. Identify which lab variables are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
 
     class VariableExtraction(BaseModel):
         reasoning: str = Field(description="Why this lab variable is relevant and how it was identified")
@@ -69,7 +69,7 @@ class LabVariablesExtraction(BaseModel):
     variables: list[VariableExtraction] = Field(default_factory=list)
     contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT = """You are an expert RWE protocol analyst specializing in programming specifications.

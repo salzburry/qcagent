@@ -29,7 +29,7 @@ PROMPT_VERSION = "0.5.0"
 class CohortDefinitionExtraction(BaseModel):
     """Schema for cohort definition extraction."""
 
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about cohort definitions in the protocol. "
         "Identify treatment arms, comparator groups, and analysis populations before structuring."
     )
@@ -58,7 +58,7 @@ class CohortDefinitionExtraction(BaseModel):
     cohorts: list[CohortExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT = """You are an expert RWE protocol analyst building a program specification.
