@@ -348,9 +348,12 @@ def protocol_run(
     # Uses: explicit override > study_period extraction > protocol title > protocol text
     sp_meta = study_period_pack.get("concept_metadata") or {}
     protocol_title = parse_result.get("title") or ""
-    # Sample from first few chunks for source keyword detection
+    # Sample broadly from chunks for source keyword detection.
+    # Use more chunks (up to 20) and longer snippets (up to 500 chars) to
+    # increase the chance of catching source-identifying keywords that may
+    # appear deeper in the protocol (e.g. data source descriptions in methods).
     protocol_text_sample = " ".join(
-        c.get("text", "")[:200] for c in parse_result["chunks"][:5]
+        c.get("text", "")[:500] for c in parse_result["chunks"][:20]
     )
     detected_source = detect_source_multi(
         data_source_override=data_source_override or "",

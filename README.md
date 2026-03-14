@@ -115,8 +115,13 @@ Swap to GPT-4o = change env vars, zero code changes.
 **QC staged correctly.** Pre-review QC flags issues for the reviewer (including quote-in-chunk validation).
 Post-review QC validates completeness after human selection. No false warnings.
 
-**Parse-fail gate.** If PDF parse quality is FAIL, the pipeline stops and produces a
-shell spec with a CRITICAL QC warning instead of feeding garbage into extraction.
+**Best-of-all parser selection.** All four parser strategies are evaluated and scored.
+The best-scoring acceptable result is returned — not the first acceptable one.
+This ensures a page-first parse with grade "pass" wins over a heading-based parse
+with grade "warn", even though heading-based runs first.
+
+**Parse-fail gate.** If all parser strategies produce grade FAIL, the pipeline stops
+and produces a shell spec with a CRITICAL QC warning instead of feeding garbage into extraction.
 
 **[UNRESOLVED] markers, not plausible fakes.** Placeholder rows use explicit `[UNRESOLVED]` markers
 instead of realistic-sounding default definitions. This prevents reviewers from mistaking
@@ -136,8 +141,10 @@ than one-shot extraction.
 sponsor terms (OS, PFS, MACE, DEATH, LTFU) instead of positional names (EP01, CENS01).
 20+ known abbreviation mappings included.
 
-**Demographics provenance gate.** Static-only demographics packs (no page/confidence provenance)
+**Demographics provenance gate.** Static-only demographics packs (no source page provenance)
 are marked as `explicit="inferred"` with `[UNRESOLVED]` notes, preventing false provenance claims.
+Optional demographic families (BMI, weight, height, smoking) are only included when mentioned
+in candidates with actual page-level provenance — not from static template snippets.
 
 **Device-aware retrieval.** Embedding and reranker models auto-detect GPU/CPU.
 Override with `RETRIEVAL_DEVICE` and `RETRIEVAL_FP16` env vars for explicit control.
@@ -539,6 +546,7 @@ python setup_vllm.py --set-env
 - Checks free GPU memory before launching
 - Applies T4/sm_75 flashinfer workaround
 - Uses `--enforce-eager` and `VLLM_USE_V1=0` to avoid V1 engine core crashes
+- Adds `--served-model-name` when loading from a local path (ensures client model ID matches)
 - Dumps last 80 lines of stderr on failure for diagnosis
 
 Options:
