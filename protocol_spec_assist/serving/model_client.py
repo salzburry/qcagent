@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import os
 import json
+import re
 import time
 import logging
 from typing import Optional, Type, TypeVar
@@ -248,6 +249,11 @@ class LocalModelClient:
 
                 choice = response.choices[0]
                 raw = choice.message.content
+
+                # Strip <think>...</think> blocks (Qwen3 reasoning traces)
+                if raw and "<think>" in raw:
+                    raw = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
+
                 if not raw or not raw.strip():
                     raise ValueError("Empty response content from model")
 
