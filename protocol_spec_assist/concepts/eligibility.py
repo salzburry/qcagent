@@ -39,6 +39,8 @@ class CriterionInventory(BaseModel):
         confidence: float = Field(ge=0.0, le=1.0)
 
     criteria: list[CriterionStub]
+    contradictions_found: bool = False
+    contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(ge=0.0, le=1.0)
 
 
@@ -54,6 +56,8 @@ Rules:
 - Classify each by domain: demographic, clinical, treatment, enrollment, other.
 - Return the chunk_id from each chunk header for provenance.
 - Keep criterion_label short (under 60 characters).
+- If different sections of the protocol contradict each other on inclusion
+  criteria, set contradictions_found=true and explain in contradiction_detail.
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
@@ -69,6 +73,8 @@ Rules:
 - Classify each by domain: demographic, clinical, treatment, enrollment, other.
 - Return the chunk_id from each chunk header for provenance.
 - Keep criterion_label short (under 60 characters).
+- If different sections of the protocol contradict each other on exclusion
+  criteria, set contradictions_found=true and explain in contradiction_detail.
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
@@ -391,7 +397,8 @@ def _two_pass_extract(
         protocol_id=protocol_id,
         concept=concept,
         candidates=candidates,
-        contradictions_found=False,  # contradictions checked at inventory level
+        contradictions_found=inventory.contradictions_found,
+        contradiction_detail=inventory.contradiction_detail,
         overall_confidence=inventory.overall_confidence,
         low_retrieval_signal=low_signal,
         adjudicator_used=False,
@@ -410,12 +417,19 @@ def _get_chunk_neighborhood(
     target_chunk_id: str,
     radius: int = 2,
 ) -> list[RetrievedChunk]:
-    """Get a chunk and its neighbors by position in the chunk list."""
-    for i, ch in enumerate(chunks):
+    """Get a chunk and its document-order neighbors.
+
+    Sorts by page number first so neighbors are page-neighbors,
+    not ranking-neighbors. This matters because eligibility criteria
+    are usually contiguous in the document.
+    """
+    # Sort by page for document-order neighborhood
+    page_sorted = sorted(chunks, key=lambda c: (c.page or 0, c.chunk_id or ""))
+    for i, ch in enumerate(page_sorted):
         if ch.chunk_id == target_chunk_id:
             start = max(0, i - radius)
-            end = min(len(chunks), i + radius + 1)
-            return chunks[start:end]
+            end = min(len(page_sorted), i + radius + 1)
+            return page_sorted[start:end]
     # Not found — return the target chunk alone if possible
     return [ch for ch in chunks if ch.chunk_id == target_chunk_id] or chunks[:3]
 

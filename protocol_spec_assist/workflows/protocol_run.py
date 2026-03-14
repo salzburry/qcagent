@@ -276,12 +276,37 @@ def protocol_run(
     # Step 1: Parse (with quality scoring)
     parse_result = task_parse_protocol(pdf_path, pid)
     quality = parse_result.get("parse_quality") or {}
+    parse_grade = quality.get("grade", "n/a")
     logger.info(
         f"Parsed {parse_result['n_sections']} sections | "
-        f"quality={quality.get('grade', 'n/a')} | "
+        f"quality={parse_grade} | "
         f"med_text={quality.get('median_text_len', 0):.0f} | "
         f"tables={quality.get('table_count', 0)}"
     )
+
+    # GATE: fail closed on bad parses — do not feed garbage into extraction
+    if parse_grade == "fail":
+        logger.error(
+            "Parse quality is FAIL — extraction would produce unreliable results. "
+            "Generating shell spec with QC issues instead."
+        )
+        shell_warnings = [
+            f"CRITICAL: PDF parse quality is FAIL (median_text={quality.get('median_text_len', 0):.0f}, "
+            f"empty_ratio={quality.get('empty_ratio', 0):.2f}). "
+            f"All extracted rows are unreliable. Re-parse with OCR or provide a cleaner PDF.",
+        ]
+        # Generate a shell spec with no evidence, only QC warnings
+        shell_spec = build_program_spec(
+            packs={}, protocol_id=pid, qc_warnings=shell_warnings,
+        )
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        spec_json_path = out_dir / f"{pid}_spec.json"
+        with open(spec_json_path, "w") as f:
+            json.dump(shell_spec.model_dump(), f, indent=2, default=str)
+        html_path = save_html(shell_spec, str(out_dir / f"{pid}_spec.html"))
+        logger.info(f"Shell spec saved: {spec_json_path}")
+        return str(spec_json_path)
 
     # Step 2: Index (skip if already indexed)
     # Share one ProtocolIndex instance across all finders to avoid reloading models

@@ -115,7 +115,9 @@ def expand_data_prep(
             confidence=cand.llm_confidence,
         ))
 
-    # Ensure minimum required dates exist (INIT, INDEX, FUED)
+    # Ensure minimum required dates exist (INIT, INDEX, FUED) as placeholders.
+    # These are LOW PRIORITY — extracted rows from index_date/follow_up_end
+    # concept finders will replace them in build_program_spec().
     for required_var in ["INIT", "INDEX", "FUED"]:
         if required_var not in seen_variables:
             defaults = _DATE_DEFAULTS[required_var]
@@ -124,7 +126,8 @@ def expand_data_prep(
                 variable=required_var,
                 label=defaults["label"],
                 definition=definition,
-                additional_notes="auto-generated — not found in protocol text",
+                additional_notes="[PLACEHOLDER] auto-generated — not found in protocol text. "
+                                "Will be replaced by extracted evidence if available.",
                 confidence=None,
             ))
 

@@ -310,39 +310,46 @@ def build_program_spec(
         spec.important_dates.extend(dates)
         spec.time_periods.extend(periods)
 
-    # ── Data Prep: index date (merge with above, avoid duplicates) ──
-    existing_date_vars = {d.variable for d in spec.important_dates}
-    if "index_date" in packs and "INDEX" not in existing_date_vars:
+    # ── Data Prep: index date — extracted evidence REPLACES placeholders ──
+    if "index_date" in packs:
         idx_pack = packs["index_date"]
         gov_text = _get_governing_text(idx_pack)
         cand = _get_governing_candidate(idx_pack)
         if gov_text:
-            spec.important_dates.append(ImportantDate(
+            extracted_index = ImportantDate(
                 variable="INDEX",
                 label="Index date",
                 definition=gov_text,
                 additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
                 source_page=cand.page if cand else None,
                 confidence=cand.llm_confidence if cand else None,
-            ))
+            )
+            # Replace any existing INDEX (including placeholders) with extracted evidence
+            spec.important_dates = [
+                d for d in spec.important_dates if d.variable != "INDEX"
+            ] + [extracted_index]
 
-    # ── Data Prep: follow-up end (merge, avoid duplicates) ──
-    existing_date_vars = {d.variable for d in spec.important_dates}
-    existing_period_names = {p.time_period for p in spec.time_periods}
+    # ── Data Prep: follow-up end — extracted evidence REPLACES placeholders ──
     if "follow_up_end" in packs:
         fu_pack = packs["follow_up_end"]
         gov_text = _get_governing_text(fu_pack)
         cand = _get_governing_candidate(fu_pack)
         if gov_text:
-            if "FUED" not in existing_date_vars:
-                spec.important_dates.append(ImportantDate(
-                    variable="FUED",
-                    label="End of follow-up date",
-                    definition=gov_text,
-                    additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
-                    source_page=cand.page if cand else None,
-                    confidence=cand.llm_confidence if cand else None,
-                ))
+            extracted_fued = ImportantDate(
+                variable="FUED",
+                label="End of follow-up date",
+                definition=gov_text,
+                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
+                source_page=cand.page if cand else None,
+                confidence=cand.llm_confidence if cand else None,
+            )
+            # Replace any existing FUED (including placeholders) with extracted evidence
+            spec.important_dates = [
+                d for d in spec.important_dates if d.variable != "FUED"
+            ] + [extracted_fued]
+
+            # Add FU time period if not already present from study_period extraction
+            existing_period_names = {p.time_period for p in spec.time_periods}
             if "FU" not in existing_period_names:
                 spec.time_periods.append(TimePeriod(
                     time_period="FU",
@@ -353,21 +360,32 @@ def build_program_spec(
                 ))
 
     # ── StudyPop: inclusion criteria ──
+    # Definition = operational detail (what a programmer needs).
+    # Protocol quote goes into additional_notes as provenance.
     if "eligibility_inclusion" in packs:
         inc_pack = packs["eligibility_inclusion"]
         meta = (inc_pack.concept_metadata or {}).get("per_candidate", {})
         candidates = inc_pack.selected_candidates if inc_pack.selected_candidates is not None else inc_pack.candidates
         for cand in candidates:
             cm = meta.get(cand.candidate_id, {})
+            operational = cm.get("operational_detail") or ""
+            # If we have an operational detail, use it as definition.
+            # Otherwise fall back to the quote.
+            definition = operational if operational else cand.snippet
+            lookback = cm.get("lookback_window") or ""
+            if lookback:
+                definition = f"{definition} (lookback: {lookback})"
+            # Quote goes into notes for provenance
+            notes = f'Protocol text: "{cand.snippet}"' if operational else ""
             spec.inclusion_criteria.append(CriterionRow(
                 time_period="STUDY_PD",
                 variable=cand.sponsor_term or "",
                 label=cand.sponsor_term or "",
                 values="",
-                definition=cand.snippet,
+                definition=definition,
                 domain=cm.get("domain", "other"),
                 lookback_window=cm.get("lookback_window"),
-                additional_notes=cm.get("operational_detail") or "",
+                additional_notes=notes,
                 confidence=cand.llm_confidence,
                 explicit=cand.explicit,
                 source_page=cand.page,
@@ -380,15 +398,21 @@ def build_program_spec(
         candidates = exc_pack.selected_candidates if exc_pack.selected_candidates is not None else exc_pack.candidates
         for cand in candidates:
             cm = meta.get(cand.candidate_id, {})
+            operational = cm.get("operational_detail") or ""
+            definition = operational if operational else cand.snippet
+            lookback = cm.get("lookback_window") or ""
+            if lookback:
+                definition = f"{definition} (lookback: {lookback})"
+            notes = f'Protocol text: "{cand.snippet}"' if operational else ""
             spec.exclusion_criteria.append(CriterionRow(
                 time_period="STUDY_PD",
                 variable=cand.sponsor_term or "",
                 label=cand.sponsor_term or "",
                 values="",
-                definition=cand.snippet,
+                definition=definition,
                 domain=cm.get("domain", "other"),
                 lookback_window=cm.get("lookback_window"),
-                additional_notes=cm.get("operational_detail") or "",
+                additional_notes=notes,
                 confidence=cand.llm_confidence,
                 explicit=cand.explicit,
                 source_page=cand.page,

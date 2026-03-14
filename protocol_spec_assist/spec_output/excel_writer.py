@@ -78,9 +78,22 @@ def _write_section_row(ws, row: int, title: str, ncols: int):
         ws.cell(row=row, column=col).fill = FILL_SECTION
 
 
-def _write_data_row(ws, row: int, values: list, confidence: float | None = None):
-    """Write a data row with optional confidence-based fill."""
-    fill = _confidence_fill(confidence) if confidence else FILL_DATA
+def _write_data_row(
+    ws, row: int, values: list,
+    confidence: float | None = None,
+    use_confidence_fill: bool = False,
+):
+    """Write a data row.
+
+    Args:
+        confidence: Confidence score (used only for hidden provenance sheets).
+        use_confidence_fill: If True, apply confidence-based coloring.
+            Only set True for hidden/provenance sheets — NEVER for
+            stakeholder-facing tabs.
+    """
+    fill = None
+    if use_confidence_fill and confidence is not None:
+        fill = _confidence_fill(confidence)
     for col, val in enumerate(values, 1):
         cell = ws.cell(row=row, column=col, value=val)
         cell.font = FONT_NORMAL
@@ -382,7 +395,7 @@ def _write_provenance_sheet(wb, spec: ProgramSpec, tab_configs: list):
             "3.Data Prep", i, dt.variable, dt.label,
             dt.confidence, dt.source_page, "",
             (dt.definition or "")[:100],
-        ], confidence=dt.confidence)
+        ], confidence=dt.confidence, use_confidence_fill=True)
         r += 1
 
     # Data Prep time periods
@@ -391,7 +404,7 @@ def _write_provenance_sheet(wb, spec: ProgramSpec, tab_configs: list):
             "3.Data Prep", i, tp.time_period, tp.label,
             tp.confidence, tp.source_page, "",
             (tp.definition or "")[:100],
-        ], confidence=tp.confidence)
+        ], confidence=tp.confidence, use_confidence_fill=True)
         r += 1
 
     # StudyPop criteria
@@ -400,14 +413,14 @@ def _write_provenance_sheet(wb, spec: ProgramSpec, tab_configs: list):
             "4.StudyPop (Inc)", i, crit.variable, crit.label,
             crit.confidence, crit.source_page, crit.explicit,
             (crit.definition or "")[:100],
-        ], confidence=crit.confidence)
+        ], confidence=crit.confidence, use_confidence_fill=True)
         r += 1
     for i, crit in enumerate(spec.exclusion_criteria, 1):
         _write_data_row(ws, r, [
             "4.StudyPop (Exc)", i, crit.variable, crit.label,
             crit.confidence, crit.source_page, crit.explicit,
             (crit.definition or "")[:100],
-        ], confidence=crit.confidence)
+        ], confidence=crit.confidence, use_confidence_fill=True)
         r += 1
 
     # Variable tabs
@@ -417,7 +430,7 @@ def _write_provenance_sheet(wb, spec: ProgramSpec, tab_configs: list):
                 tab_name, i, var_row.variable, var_row.label,
                 var_row.confidence, var_row.source_page, var_row.explicit,
                 (var_row.definition or "")[:100],
-            ], confidence=var_row.confidence)
+            ], confidence=var_row.confidence, use_confidence_fill=True)
             r += 1
 
     # Column widths
