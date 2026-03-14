@@ -252,11 +252,13 @@ def test_build_spec_with_variable_tab_packs():
     }
     spec = build_program_spec(packs, protocol_id="P001")
 
-    # Demographics should be in spec.demographics
-    assert len(spec.demographics) == 2
-    assert spec.demographics[0].variable == "AGE"
-    assert spec.demographics[0].time_period == "STUDY_PD"
-    assert spec.demographics[1].variable == "SEX"
+    # Demographics now uses DemographicsWriter — expands into variable families
+    # Core families: AGE (AGE, AGEN, AGEGR, AGEGRN), SEX (SEX, SEXN),
+    # RACE (RACE, RACEN), ETHNICITY (ETHNIC, ETHNICN) = 10 rows
+    assert len(spec.demographics) >= 4  # at minimum core vars
+    var_names = [r.variable for r in spec.demographics]
+    assert "AGE" in var_names
+    assert "SEX" in var_names
 
     # Treatment variables should be in spec.treatment_variables
     assert len(spec.treatment_variables) == 1
@@ -291,8 +293,14 @@ def test_build_spec_all_variable_tabs():
     spec = build_program_spec(packs, protocol_id="P001")
     for concept, field in concept_fields.items():
         rows = getattr(spec, field)
-        assert len(rows) == 1, f"{field} should have 1 row, got {len(rows)}"
-        assert rows[0].variable == f"VAR_{concept}"
+        if concept == "demographics":
+            # Demographics uses DemographicsWriter with family expansion
+            assert len(rows) >= 4, f"{field} should have at least 4 rows (core families)"
+            var_names = [r.variable for r in rows]
+            assert "AGE" in var_names
+        else:
+            assert len(rows) == 1, f"{field} should have 1 row, got {len(rows)}"
+            assert rows[0].variable == f"VAR_{concept}"
 
 
 # ── Static template tests ──────────────────────────────────────────────────

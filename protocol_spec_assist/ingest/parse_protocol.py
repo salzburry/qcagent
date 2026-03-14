@@ -2,11 +2,17 @@
 Protocol ingestion via Docling.
 Preserves: page layout, reading order, table structure, appendices, footnotes.
 Output: structured dict ready for chunking and indexing.
+
+Quality scoring: every parse result is graded (pass/warn/fail).
+If Docling produces a "fail" grade, falls back to PyMuPDF automatically.
+PyMuPDF fallback merges adjacent micro-sections to avoid chunk fragmentation.
 """
 
 from __future__ import annotations
 import hashlib
 import json
+import re
+import statistics
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -26,11 +32,31 @@ class ParsedSection:
 
 
 @dataclass
+class ParseQuality:
+    """Parse quality metrics — used to decide whether to accept or retry."""
+    n_sections: int
+    median_heading_len: float
+    median_text_len: float
+    table_count: int
+    empty_ratio: float          # fraction of sections with text < 20 chars
+    grade: str                  # "pass" | "warn" | "fail"
+
+    def __str__(self) -> str:
+        return (
+            f"ParseQuality(grade={self.grade}, sections={self.n_sections}, "
+            f"med_heading={self.median_heading_len:.0f}, "
+            f"med_text={self.median_text_len:.0f}, "
+            f"tables={self.table_count}, empty_ratio={self.empty_ratio:.2f})"
+        )
+
+
+@dataclass
 class ParsedProtocol:
     protocol_id: str
     title: Optional[str]
     sections: list[ParsedSection] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    quality: Optional[ParseQuality] = None
 
     def sections_by_type(self, source_type: str) -> list[ParsedSection]:
         return [s for s in self.sections if s.source_type == source_type]
@@ -102,38 +128,161 @@ def _deterministic_chunk_id(
     return str(uuid.UUID(hex=hex32))
 
 
-def _sliding_window(text: str, max_chars: int = 1000, overlap: int = 150) -> list[str]:
-    """Split text into overlapping chunks on sentence boundaries."""
-    import re
-    # Split on sentence-ending punctuation, bullet points, and blank lines
-    parts = re.split(r'(?<=[.!?])\s+|(?:\n\s*\n)|(?:\n\s*[-•●]\s)', text.strip())
+# ── Quality scoring ───────────────────────────────────────────────────────────
+
+def _quality_score(parsed: ParsedProtocol) -> ParseQuality:
+    """Score parse quality to decide accept vs fallback."""
+    sections = parsed.sections
+    if not sections:
+        return ParseQuality(
+            n_sections=0, median_heading_len=0, median_text_len=0,
+            table_count=0, empty_ratio=1.0, grade="fail",
+        )
+
+    heading_lens = [len(s.heading) for s in sections]
+    text_lens = [len(s.text) for s in sections]
+    table_count = sum(1 for s in sections if s.source_type == "table")
+    empty_count = sum(1 for s in sections if len(s.text.strip()) < 20 and s.source_type != "table")
+    empty_ratio = empty_count / len(sections) if sections else 1.0
+
+    med_heading = statistics.median(heading_lens)
+    med_text = statistics.median(text_lens)
+
+    # Grade logic:
+    # - fail: median heading < 5 chars (noise headings) OR median text < 30 chars
+    #         OR empty_ratio > 0.6 OR fewer than 3 sections
+    # - warn: median text < 80 chars OR empty_ratio > 0.3
+    # - pass: everything else
+    if med_heading < 5 or med_text < 30 or empty_ratio > 0.6 or len(sections) < 3:
+        grade = "fail"
+    elif med_text < 80 or empty_ratio > 0.3:
+        grade = "warn"
+    else:
+        grade = "pass"
+
+    return ParseQuality(
+        n_sections=len(sections),
+        median_heading_len=med_heading,
+        median_text_len=med_text,
+        table_count=table_count,
+        empty_ratio=empty_ratio,
+        grade=grade,
+    )
+
+
+# ── Sliding window chunking (bullet-aware) ────────────────────────────────────
+
+# Patterns that mark atomic list items — should not be split mid-item
+_LIST_ITEM_RE = re.compile(
+    r'\n\s*'                       # newline + optional whitespace
+    r'(?:'
+    r'\d{1,3}[.)]\s'               # numbered: "1. ", "12) "
+    r'|[a-z][.)]\s'                # lettered: "a. ", "b) "
+    r'|[ivxIVX]+[.)]\s'            # roman: "i. ", "iv) "
+    r'|[-•●○▪▸]\s'                 # bullet markers
+    r')'
+)
+
+def _sliding_window(text: str, max_chars: int = 1500, overlap: int = 200) -> list[str]:
+    """Split text into overlapping chunks, preserving list items as atomic units.
+
+    Splits on:
+      1. Blank lines (paragraph boundaries)
+      2. Sentence-ending punctuation followed by whitespace
+      3. List item markers (numbered, lettered, bulleted)
+
+    Each list item is kept as one unit — never split mid-item.
+    """
+    text = text.strip()
+    if not text:
+        return [text]
+
+    # Split into atomic parts: paragraphs, sentences, and list items
+    # First split on blank lines
+    paragraphs = re.split(r'\n\s*\n', text)
+
+    parts = []
+    for para in paragraphs:
+        # Within each paragraph, split on list item boundaries
+        items = _LIST_ITEM_RE.split(para)
+        # Also split long non-list text on sentence boundaries
+        for item in items:
+            item = item.strip()
+            if not item:
+                continue
+            if len(item) > max_chars:
+                # Long prose block — split on sentence boundaries
+                sentences = re.split(r'(?<=[.!?])\s+', item)
+                parts.extend(s.strip() for s in sentences if s.strip())
+            else:
+                parts.append(item)
+
+    if not parts:
+        return [text]
+
+    # Build overlapping chunks from parts
     chunks, current = [], ""
     for part in parts:
-        if len(current) + len(part) > max_chars and current:
+        if len(current) + len(part) + 1 > max_chars and current:
             chunks.append(current.strip())
+            # Overlap: take the tail of the current chunk
             current = current[-overlap:] + " " + part
         else:
-            current += " " + part
+            current = (current + " " + part) if current else part
     if current.strip():
         chunks.append(current.strip())
+
     return chunks or [text]
 
 
+# ── Main entry point ──────────────────────────────────────────────────────────
+
 def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedProtocol:
     """
-    Parse a protocol PDF using Docling.
-    Falls back to PyMuPDF if Docling is not installed.
+    Parse a protocol PDF using Docling with quality-gated fallback to PyMuPDF.
+
+    1. Try Docling (best table/layout preservation).
+    2. Score the result — if grade is "fail", fall back to PyMuPDF.
+    3. PyMuPDF result is post-processed to merge micro-sections.
     """
     path = Path(pdf_path)
     pid = protocol_id or path.stem
 
+    # Try Docling first
     try:
-        return _parse_with_docling(path, pid)
+        result = _parse_with_docling(path, pid)
+        quality = _quality_score(result)
+        result.quality = quality
+        print(f"[Parser] Docling: {quality}")
+
+        if quality.grade == "fail":
+            print("[Parser] Docling parse quality too low, falling back to PyMuPDF.")
+            fallback = _parse_with_pymupdf(path, pid)
+            fallback = _merge_micro_sections(fallback)
+            fallback.quality = _quality_score(fallback)
+            print(f"[Parser] PyMuPDF (merged): {fallback.quality}")
+            return fallback
+        return result
+
     except ImportError:
         print("[Parser] Docling not installed, falling back to PyMuPDF.")
         print("[Parser] Install: pip install docling")
-        return _parse_with_pymupdf(path, pid)
+        fallback = _parse_with_pymupdf(path, pid)
+        fallback = _merge_micro_sections(fallback)
+        fallback.quality = _quality_score(fallback)
+        print(f"[Parser] PyMuPDF (merged): {fallback.quality}")
+        return fallback
 
+    except Exception as e:
+        print(f"[Parser] Docling failed ({type(e).__name__}: {e}), falling back to PyMuPDF.")
+        fallback = _parse_with_pymupdf(path, pid)
+        fallback = _merge_micro_sections(fallback)
+        fallback.quality = _quality_score(fallback)
+        print(f"[Parser] PyMuPDF (merged): {fallback.quality}")
+        return fallback
+
+
+# ── Docling parser ────────────────────────────────────────────────────────────
 
 def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
     """
@@ -255,6 +404,8 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
     )
 
 
+# ── PyMuPDF fallback ──────────────────────────────────────────────────────────
+
 def _parse_with_pymupdf(path: Path, protocol_id: str) -> ParsedProtocol:
     """
     PyMuPDF fallback — less accurate on tables but functional.
@@ -310,6 +461,68 @@ def _parse_with_pymupdf(path: Path, protocol_id: str) -> ParsedProtocol:
 
     doc.close()
     return ParsedProtocol(protocol_id=protocol_id, title=None, sections=sections)
+
+
+# ── Post-processing: merge micro-sections ─────────────────────────────────────
+
+_MIN_SECTION_TEXT_LEN = 50
+
+def _merge_micro_sections(parsed: ParsedProtocol) -> ParsedProtocol:
+    """Merge adjacent narrative sections where the text body is too short.
+
+    PyMuPDF often creates a new section for every bold span, resulting in
+    hundreds of micro-sections (e.g. 552 sections with ~17 char text bodies).
+    This merges them into their successor section, keeping the first heading.
+    """
+    if len(parsed.sections) < 2:
+        return parsed
+
+    merged: list[ParsedSection] = []
+    pending: Optional[ParsedSection] = None
+
+    for sec in parsed.sections:
+        # Tables are never merged
+        if sec.source_type == "table":
+            if pending:
+                merged.append(pending)
+                pending = None
+            merged.append(sec)
+            continue
+
+        if pending is None:
+            pending = ParsedSection(
+                heading=sec.heading,
+                heading_level=sec.heading_level,
+                text=sec.text,
+                page_start=sec.page_start,
+                page_end=sec.page_end,
+                source_type=sec.source_type,
+                table_data=sec.table_data,
+            )
+        else:
+            # Decide: is the pending section too small to stand alone?
+            if len(pending.text.strip()) < _MIN_SECTION_TEXT_LEN:
+                # Merge into current: keep pending heading, append texts
+                pending.text = pending.text + "\n" + sec.heading + "\n" + sec.text
+                pending.page_end = sec.page_end
+            else:
+                # Pending is big enough — flush it, start new pending
+                merged.append(pending)
+                pending = ParsedSection(
+                    heading=sec.heading,
+                    heading_level=sec.heading_level,
+                    text=sec.text,
+                    page_start=sec.page_start,
+                    page_end=sec.page_end,
+                    source_type=sec.source_type,
+                    table_data=sec.table_data,
+                )
+
+    if pending:
+        merged.append(pending)
+
+    parsed.sections = merged
+    return parsed
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

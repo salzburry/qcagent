@@ -208,15 +208,76 @@ def qc_quote_in_chunk(
     return results
 
 
-# All currently implemented concepts
+# All currently implemented concepts (expanded to match all 12 finders)
 IMPLEMENTED_CONCEPTS = [
     "index_date", "follow_up_end", "primary_endpoint",
     "eligibility_inclusion", "eligibility_exclusion",
     "study_period", "censoring_rules",
+    "demographics", "clinical_characteristics",
+    "biomarkers", "lab_variables", "treatment_variables",
 ]
 
 # Backward-compat alias
 PHASE1_CONCEPTS = IMPLEMENTED_CONCEPTS
+
+
+# ── Data Prep completeness checks ─────────────────────────────────────────────
+
+_REQUIRED_DATA_PREP_DATES = {"INIT", "INDEX", "FUED"}
+
+
+def qc_data_prep_completeness(packs: dict[str, EvidencePack]) -> list[QCResult]:
+    """Check that Data Prep important dates include INIT, INDEX, and FUED."""
+    results = []
+    sp_pack = packs.get("study_period")
+    if not sp_pack:
+        return results
+
+    meta = sp_pack.concept_metadata or {}
+    per_candidate = meta.get("per_candidate", {})
+
+    found_variables = set()
+    for cm in per_candidate.values():
+        if cm.get("row_type") == "important_date":
+            found_variables.add(cm.get("variable", "").upper())
+
+    missing = _REQUIRED_DATA_PREP_DATES - found_variables
+    if missing:
+        results.append(QCResult(
+            rule_id="QC-007",
+            level="warning",
+            concept="study_period",
+            stage="pre_review",
+            message=f"Data Prep missing required dates: {', '.join(sorted(missing))}.",
+            detail="INIT, INDEX, and FUED are required in every program spec. "
+                   "Row writers will auto-generate defaults but definitions may be wrong.",
+        ))
+
+    return results
+
+
+# ── Demographics minimum coverage ─────────────────────────────────────────────
+
+_REQUIRED_DEMOGRAPHICS = {"AGE", "SEX"}
+
+
+def qc_demographics_minimum(packs: dict[str, EvidencePack]) -> list[QCResult]:
+    """Check that demographics pack covers at least AGE and SEX."""
+    results = []
+    demo_pack = packs.get("demographics")
+    if not demo_pack:
+        return results
+
+    if not demo_pack.candidates:
+        results.append(QCResult(
+            rule_id="QC-008",
+            level="warning",
+            concept="demographics",
+            stage="pre_review",
+            message="Demographics pack has no candidates — row-family expansion will use defaults only.",
+        ))
+
+    return results
 
 
 def run_all_qc(
@@ -232,6 +293,8 @@ def run_all_qc(
         results.extend(qc_pre_review(packs))
         results.extend(qc_cross_concept(packs, stage="pre_review"))
         results.extend(qc_quote_in_chunk(packs, chunk_lookup))
+        results.extend(qc_data_prep_completeness(packs))
+        results.extend(qc_demographics_minimum(packs))
     elif stage == "post_review":
         results.extend(qc_post_review(packs))
         results.extend(qc_cross_concept(packs, stage="post_review"))

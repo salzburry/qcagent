@@ -31,7 +31,7 @@ from ..ta_packs.loader import load_ta_pack
 from ..concepts.index_date import find_index_date
 from ..concepts.endpoints import find_follow_up_end, find_primary_endpoint
 from ..concepts.eligibility import find_inclusion_criteria, find_exclusion_criteria
-from ..concepts.study_design import find_study_period, find_censoring_rules
+from ..concepts.study_design import find_study_period, find_data_prep_dates, find_censoring_rules
 from ..concepts.demographics import find_demographics
 from ..concepts.clinical_characteristics import find_clinical_characteristics
 from ..concepts.biomarkers import find_biomarkers
@@ -53,10 +53,25 @@ except ImportError:
 
 @task(name="parse-protocol", retries=1)
 def task_parse_protocol(pdf_path: str, protocol_id: str) -> dict:
-    """Parse protocol PDF → structured sections dict."""
+    """Parse protocol PDF → structured sections dict with quality metrics."""
     parsed = parse_protocol(pdf_path, protocol_id)
     chunks = parsed.to_chunks()
-    return {"chunks": chunks, "title": parsed.title, "n_sections": len(parsed.sections)}
+    quality = None
+    if parsed.quality:
+        quality = {
+            "grade": parsed.quality.grade,
+            "n_sections": parsed.quality.n_sections,
+            "median_heading_len": parsed.quality.median_heading_len,
+            "median_text_len": parsed.quality.median_text_len,
+            "table_count": parsed.quality.table_count,
+            "empty_ratio": parsed.quality.empty_ratio,
+        }
+    return {
+        "chunks": chunks,
+        "title": parsed.title,
+        "n_sections": len(parsed.sections),
+        "parse_quality": quality,
+    }
 
 
 @task(name="index-protocol", retries=1)
@@ -161,12 +176,15 @@ def task_generate_spec(
     qc_results: list[dict],
     output_dir: str,
     protocol_id: str,
+    data_source: str = "generic",
 ) -> dict:
     """Generate draft spec: JSON + HTML + Excel (if available)."""
     packs = {k: EvidencePack.model_validate(v) for k, v in packs_dict.items()}
     qc_warnings = [r["message"] for r in qc_results if r.get("level") in ("error", "warning")]
 
-    spec = build_program_spec(packs, protocol_id=protocol_id, qc_warnings=qc_warnings)
+    spec = build_program_spec(
+        packs, protocol_id=protocol_id, qc_warnings=qc_warnings, data_source=data_source,
+    )
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -255,9 +273,15 @@ def protocol_run(
         )
     logger.info("Model preflight passed — default model available.")
 
-    # Step 1: Parse
+    # Step 1: Parse (with quality scoring)
     parse_result = task_parse_protocol(pdf_path, pid)
-    logger.info(f"Parsed {parse_result['n_sections']} sections")
+    quality = parse_result.get("parse_quality") or {}
+    logger.info(
+        f"Parsed {parse_result['n_sections']} sections | "
+        f"quality={quality.get('grade', 'n/a')} | "
+        f"med_text={quality.get('median_text_len', 0):.0f} | "
+        f"tables={quality.get('table_count', 0)}"
+    )
 
     # Step 2: Index (skip if already indexed)
     # Share one ProtocolIndex instance across all finders to avoid reloading models
@@ -318,7 +342,7 @@ def protocol_run(
     output_path = task_save_packs(packs, qc_results, output_dir, pid)
 
     # Step 6: Generate draft spec (HTML + Excel + JSON)
-    spec_outputs = task_generate_spec(packs, qc_results, output_dir, pid)
+    spec_outputs = task_generate_spec(packs, qc_results, output_dir, pid, data_source=detected_source)
 
     logger.info(f"Run complete. Evidence packs at: {output_path}")
     logger.info(f"Draft spec: {spec_outputs.get('spec_html', 'n/a')}")

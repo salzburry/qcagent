@@ -1,6 +1,12 @@
 """
 Eligibility criteria concept finders (inclusion + exclusion).
-Same fixed workflow pattern as index_date.py.
+
+Two-pass extraction to avoid token overflow:
+  Pass 1 (inventory): Light schema — criterion_label, chunk_id, domain, confidence.
+  Pass 2 (detail): Per-criterion detail — quoted_text, operational_detail, lookback.
+
+This prevents the 1536-token (now 4096) truncation that occurred when extracting
+20+ criteria with full schemas in a single call.
 """
 
 from __future__ import annotations
@@ -13,17 +19,96 @@ from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
 
-FINDER_VERSION = "0.3.0"
-PROMPT_VERSION = "0.3.0"
+FINDER_VERSION = "0.4.0"
+PROMPT_VERSION = "0.4.0"
 CONFIDENCE_THRESHOLD = 0.65
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Inclusion Criteria
+# Pass 1: Inventory — lightweight list of criteria
 # ══════════════════════════════════════════════════════════════════════════════
 
-CONCEPT_INC = "eligibility_inclusion"
+class CriterionInventory(BaseModel):
+    """Pass 1: lightweight inventory of all criteria found."""
+    class CriterionStub(BaseModel):
+        chunk_id: Optional[str] = None
+        criterion_label: str = Field(description="Short label, e.g. 'Age >= 18'")
+        domain: str = Field(
+            description="demographic | clinical | treatment | enrollment | other"
+        )
+        confidence: float = Field(ge=0.0, le=1.0)
 
+    criteria: list[CriterionStub]
+    overall_confidence: float = Field(ge=0.0, le=1.0)
+
+
+SYSTEM_PROMPT_INVENTORY_INC = """You are an expert RWE protocol analyst.
+Identify ALL inclusion criteria from the protocol text. Return a lightweight
+inventory — just the label, domain, and confidence for each criterion.
+
+Inclusion criteria define who is eligible for the study (age, diagnosis,
+enrollment requirements, etc.).
+
+Rules:
+- List EVERY distinct inclusion criterion — do not merge separate criteria.
+- Classify each by domain: demographic, clinical, treatment, enrollment, other.
+- Return the chunk_id from each chunk header for provenance.
+- Keep criterion_label short (under 60 characters).
+- Respond ONLY with valid JSON matching the schema exactly."""
+
+
+SYSTEM_PROMPT_INVENTORY_EXC = """You are an expert RWE protocol analyst.
+Identify ALL exclusion criteria from the protocol text. Return a lightweight
+inventory — just the label, domain, and confidence for each criterion.
+
+Exclusion criteria define who is NOT eligible (prior treatments, comorbidities,
+data quality requirements, etc.).
+
+Rules:
+- List EVERY distinct exclusion criterion — do not merge separate criteria.
+- Classify each by domain: demographic, clinical, treatment, enrollment, other.
+- Return the chunk_id from each chunk header for provenance.
+- Keep criterion_label short (under 60 characters).
+- Respond ONLY with valid JSON matching the schema exactly."""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Pass 2: Detail — full extraction per criterion
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CriterionDetail(BaseModel):
+    """Pass 2: full detail for a single criterion."""
+    quoted_text: str = Field(description="Exact quoted text from the protocol")
+    operational_detail: Optional[str] = Field(
+        default=None,
+        description="Operational detail: code list reference, measurement threshold, etc."
+    )
+    lookback_window: Optional[str] = Field(
+        default=None,
+        description="Time window if applicable, e.g. '12 months prior to index'"
+    )
+    explicit: ExplicitType
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str
+
+
+SYSTEM_PROMPT_DETAIL = """You are an expert RWE protocol analyst.
+Extract the FULL detail for exactly ONE criterion from the protocol text.
+
+The criterion to extract: "{criterion_label}" (domain: {domain})
+
+Rules:
+- Find the exact passage that defines this criterion.
+- Return the exact quoted_text — do not paraphrase.
+- Capture operational details (code lists, thresholds, lab values).
+- Capture lookback windows if applicable.
+- If you cannot find this criterion in the text, set confidence to 0.
+- Respond ONLY with valid JSON matching the schema exactly."""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Full extraction schemas (kept for backward compat / single-pass fallback)
+# ══════════════════════════════════════════════════════════════════════════════
 
 class InclusionCriteriaExtraction(BaseModel):
     class CriterionExtraction(BaseModel):
@@ -52,25 +137,38 @@ class InclusionCriteriaExtraction(BaseModel):
     overall_confidence: float = Field(ge=0.0, le=1.0)
 
 
-SYSTEM_PROMPT_INC = """You are an expert RWE protocol analyst.
-Extract ALL inclusion criteria from the protocol text.
+class ExclusionCriteriaExtraction(BaseModel):
+    class CriterionExtraction(BaseModel):
+        chunk_id: Optional[str] = None
+        quoted_text: str
+        criterion_label: str = Field(description="Short label, e.g. 'Prior cancer'")
+        domain: str = Field(
+            description="demographic | clinical | treatment | enrollment | other"
+        )
+        operational_detail: Optional[str] = Field(
+            default=None,
+            description="Operational detail: lookback window, code list ref, etc."
+        )
+        lookback_window: Optional[str] = Field(
+            default=None,
+            description="Time window if applicable, e.g. '6 months prior to index'"
+        )
+        section_title: str
+        explicit: ExplicitType
+        confidence: float = Field(ge=0.0, le=1.0)
+        reasoning: str
 
-Inclusion criteria define who is eligible for the study. They may include:
-- Age requirements
-- Diagnosis requirements (with ICD codes or clinical descriptions)
-- Prior treatment requirements
-- Enrollment/database requirements (continuous enrollment, data availability)
-- Lab values, clinical measures
+    criteria: list[CriterionExtraction]
+    contradictions_found: bool
+    contradiction_detail: Optional[str] = None
+    overall_confidence: float = Field(ge=0.0, le=1.0)
 
-Rules:
-- Extract EVERY distinct inclusion criterion — do not merge separate criteria.
-- Classify each by domain: demographic, clinical, treatment, enrollment, other.
-- Capture lookback windows (e.g. "12 months prior to index date").
-- Capture operational details like code list references.
-- If criteria conflict across sections, set contradictions_found=true.
-- IMPORTANT: Return the chunk_id from each chunk header for provenance.
-- Return the exact quoted_text from the protocol, not a paraphrase.
-- Respond ONLY with valid JSON matching the schema exactly."""
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Inclusion Criteria Finder (two-pass)
+# ══════════════════════════════════════════════════════════════════════════════
+
+CONCEPT_INC = "eligibility_inclusion"
 
 
 def find_inclusion_criteria(
@@ -106,94 +204,28 @@ def find_inclusion_criteria(
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_INC)
     context = _build_context(chunks, ta_warning, protocol_id)
 
-    result = client.extract(
-        system_prompt=SYSTEM_PROMPT_INC,
-        user_prompt=context,
-        schema=InclusionCriteriaExtraction,
-        use_adjudicator=False,
-        prompt_version=PROMPT_VERSION,
-    )
-    extraction, model_used = result.parsed, result.model_used
-
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_INC,
-                user_prompt=context,
-                schema=InclusionCriteriaExtraction,
-                use_adjudicator=True,
-                prompt_version=PROMPT_VERSION,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[InclusionFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
-
-    pack = _build_eligibility_pack(
-        CONCEPT_INC, protocol_id, extraction, chunks, model_used, used_adjudicator,
+    pack = _two_pass_extract(
+        concept=CONCEPT_INC,
+        protocol_id=protocol_id,
+        context=context,
+        chunks=chunks,
+        client=client,
+        inventory_prompt=SYSTEM_PROMPT_INVENTORY_INC,
+        ta_warning=ta_warning,
     )
 
     print(f"[InclusionFinder] Done. "
           f"{len(pack.candidates)} criteria | "
-          f"confidence={extraction.overall_confidence:.2f}")
+          f"confidence={pack.overall_confidence:.2f}")
 
     return pack
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Exclusion Criteria
+# Exclusion Criteria Finder (two-pass)
 # ══════════════════════════════════════════════════════════════════════════════
 
 CONCEPT_EXC = "eligibility_exclusion"
-
-
-class ExclusionCriteriaExtraction(BaseModel):
-    class CriterionExtraction(BaseModel):
-        chunk_id: Optional[str] = None
-        quoted_text: str
-        criterion_label: str = Field(description="Short label, e.g. 'Prior cancer'")
-        domain: str = Field(
-            description="demographic | clinical | treatment | enrollment | other"
-        )
-        operational_detail: Optional[str] = Field(
-            default=None,
-            description="Operational detail: lookback window, code list ref, etc."
-        )
-        lookback_window: Optional[str] = Field(
-            default=None,
-            description="Time window if applicable, e.g. '6 months prior to index'"
-        )
-        section_title: str
-        explicit: ExplicitType
-        confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
-
-    criteria: list[CriterionExtraction]
-    contradictions_found: bool
-    contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
-
-
-SYSTEM_PROMPT_EXC = """You are an expert RWE protocol analyst.
-Extract ALL exclusion criteria from the protocol text.
-
-Exclusion criteria define who is NOT eligible. They may include:
-- Prior treatments or procedures
-- Comorbidities or diagnoses
-- Lab values out of range
-- Data quality requirements (insufficient data history)
-- Pregnancy, age limits, etc.
-
-Rules:
-- Extract EVERY distinct exclusion criterion — do not merge separate criteria.
-- Classify each by domain: demographic, clinical, treatment, enrollment, other.
-- Capture lookback windows and washout periods.
-- Capture operational details like code list references.
-- If criteria conflict across sections, set contradictions_found=true.
-- IMPORTANT: Return the chunk_id from each chunk header for provenance.
-- Return the exact quoted_text from the protocol, not a paraphrase.
-- Respond ONLY with valid JSON matching the schema exactly."""
 
 
 def find_exclusion_criteria(
@@ -229,39 +261,163 @@ def find_exclusion_criteria(
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_EXC)
     context = _build_context(chunks, ta_warning, protocol_id)
 
-    result = client.extract(
-        system_prompt=SYSTEM_PROMPT_EXC,
-        user_prompt=context,
-        schema=ExclusionCriteriaExtraction,
-        use_adjudicator=False,
-        prompt_version=PROMPT_VERSION,
-    )
-    extraction, model_used = result.parsed, result.model_used
-
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_EXC,
-                user_prompt=context,
-                schema=ExclusionCriteriaExtraction,
-                use_adjudicator=True,
-                prompt_version=PROMPT_VERSION,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[ExclusionFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
-
-    pack = _build_eligibility_pack(
-        CONCEPT_EXC, protocol_id, extraction, chunks, model_used, used_adjudicator,
+    pack = _two_pass_extract(
+        concept=CONCEPT_EXC,
+        protocol_id=protocol_id,
+        context=context,
+        chunks=chunks,
+        client=client,
+        inventory_prompt=SYSTEM_PROMPT_INVENTORY_EXC,
+        ta_warning=ta_warning,
     )
 
     print(f"[ExclusionFinder] Done. "
           f"{len(pack.candidates)} criteria | "
-          f"confidence={extraction.overall_confidence:.2f}")
+          f"confidence={pack.overall_confidence:.2f}")
 
     return pack
+
+
+# ── Two-pass extraction engine ───────────────────────────────────────────────
+
+def _two_pass_extract(
+    concept: str,
+    protocol_id: str,
+    context: str,
+    chunks: list[RetrievedChunk],
+    client: LocalModelClient,
+    inventory_prompt: str,
+    ta_warning: Optional[str],
+) -> EvidencePack:
+    """Two-pass extraction: inventory then per-criterion detail.
+
+    Pass 1: Get lightweight list of all criteria (small output, never truncated).
+    Pass 2: For each criterion, extract full detail using only relevant chunks.
+    """
+    chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
+
+    # ── Pass 1: Inventory ──
+    result = client.extract(
+        system_prompt=inventory_prompt,
+        user_prompt=context,
+        schema=CriterionInventory,
+        use_adjudicator=False,
+        prompt_version=PROMPT_VERSION,
+        max_tokens=2048,  # inventory is small
+    )
+    inventory = result.parsed
+    model_used = result.model_used
+
+    if not inventory.criteria:
+        return EvidencePack(
+            protocol_id=protocol_id, concept=concept,
+            candidates=[], low_retrieval_signal=True,
+            finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
+            model_used=model_used,
+        )
+
+    # ── Pass 2: Detail per criterion ──
+    candidates = []
+    per_candidate = {}
+
+    for stub in inventory.criteria:
+        # Build focused context: if we have a chunk_id, use just that chunk + neighbors
+        if stub.chunk_id and stub.chunk_id in chunk_by_id:
+            # Use the specific chunk plus 2 neighbors for context
+            focused_chunks = _get_chunk_neighborhood(chunks, stub.chunk_id, radius=2)
+        else:
+            # Fall back to top-5 chunks
+            focused_chunks = chunks[:5]
+
+        focused_context = _build_context(focused_chunks, ta_warning, protocol_id)
+
+        detail_prompt = SYSTEM_PROMPT_DETAIL.format(
+            criterion_label=stub.criterion_label,
+            domain=stub.domain,
+        )
+
+        try:
+            detail_result = client.extract(
+                system_prompt=detail_prompt,
+                user_prompt=focused_context,
+                schema=CriterionDetail,
+                use_adjudicator=False,
+                prompt_version=PROMPT_VERSION,
+                max_tokens=1024,  # single criterion detail is small
+            )
+            detail = detail_result.parsed
+        except Exception as e:
+            print(f"[EligibilityFinder] Detail extraction failed for '{stub.criterion_label}': {e}")
+            # Create a minimal detail from the inventory stub
+            detail = CriterionDetail(
+                quoted_text=stub.criterion_label,
+                explicit="inferred",
+                confidence=stub.confidence * 0.5,
+                reasoning=f"Detail extraction failed: {e}",
+            )
+
+        matching = chunk_by_id.get(stub.chunk_id) if stub.chunk_id else None
+
+        candidate_id = hashlib.sha256(
+            f"{protocol_id}:{concept}:{stub.chunk_id or ''}:{detail.quoted_text}".encode()
+        ).hexdigest()[:12]
+
+        candidates.append(EvidenceCandidate(
+            candidate_id=candidate_id,
+            chunk_id=stub.chunk_id,
+            snippet=detail.quoted_text,
+            page=matching.page if matching else None,
+            section_title=matching.heading if matching else "",
+            source_type=matching.source_type if matching else "narrative",
+            sponsor_term=stub.criterion_label,
+            canonical_term=concept,
+            retrieval_score=matching.retrieval_score if matching else None,
+            rerank_score=matching.rerank_score if matching else None,
+            llm_confidence=detail.confidence,
+            explicit=detail.explicit,
+        ))
+
+        per_candidate[candidate_id] = {
+            "domain": stub.domain,
+            "operational_detail": detail.operational_detail,
+            "lookback_window": detail.lookback_window,
+        }
+
+    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
+    if chunks and chunks[0].rerank_score is not None:
+        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
+
+    pack = EvidencePack(
+        protocol_id=protocol_id,
+        concept=concept,
+        candidates=candidates,
+        contradictions_found=False,  # contradictions checked at inventory level
+        overall_confidence=inventory.overall_confidence,
+        low_retrieval_signal=low_signal,
+        adjudicator_used=False,
+        requires_human_selection=True,
+        finder_version=FINDER_VERSION,
+        model_used=model_used,
+        prompt_version=PROMPT_VERSION,
+    )
+    pack.concept_metadata = {"per_candidate": per_candidate}
+
+    return pack
+
+
+def _get_chunk_neighborhood(
+    chunks: list[RetrievedChunk],
+    target_chunk_id: str,
+    radius: int = 2,
+) -> list[RetrievedChunk]:
+    """Get a chunk and its neighbors by position in the chunk list."""
+    for i, ch in enumerate(chunks):
+        if ch.chunk_id == target_chunk_id:
+            start = max(0, i - radius)
+            end = min(len(chunks), i + radius + 1)
+            return chunks[start:end]
+    # Not found — return the target chunk alone if possible
+    return [ch for ch in chunks if ch.chunk_id == target_chunk_id] or chunks[:3]
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -280,64 +436,3 @@ def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], prot
 
 LOW_RETRIEVAL_THRESHOLD = 3
 RERANK_SCORE_FLOOR = 0.2
-
-
-def _build_eligibility_pack(
-    concept, protocol_id, extraction, chunks, model_used,
-    adjudicator_used: bool = False,
-) -> EvidencePack:
-    chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
-
-    candidates = []
-    for c in extraction.criteria:
-        matching = chunk_by_id.get(c.chunk_id) if c.chunk_id else None
-
-        candidate_id = hashlib.sha256(
-            f"{protocol_id}:{concept}:{c.chunk_id or ''}:{c.quoted_text}".encode()
-        ).hexdigest()[:12]
-
-        candidates.append(EvidenceCandidate(
-            candidate_id=candidate_id,
-            chunk_id=c.chunk_id,
-            snippet=c.quoted_text,
-            page=matching.page if matching else None,
-            section_title=matching.heading if matching else c.section_title,
-            source_type=matching.source_type if matching else "narrative",
-            sponsor_term=c.criterion_label,
-            canonical_term=concept,
-            retrieval_score=matching.retrieval_score if matching else None,
-            rerank_score=matching.rerank_score if matching else None,
-            llm_confidence=c.confidence,
-            explicit=c.explicit,
-        ))
-
-    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
-    if chunks and chunks[0].rerank_score is not None:
-        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
-
-    pack = EvidencePack(
-        protocol_id=protocol_id,
-        concept=concept,
-        candidates=candidates,
-        contradictions_found=extraction.contradictions_found,
-        contradiction_detail=extraction.contradiction_detail,
-        overall_confidence=extraction.overall_confidence,
-        low_retrieval_signal=low_signal,
-        adjudicator_used=adjudicator_used,
-        requires_human_selection=True,
-        finder_version=FINDER_VERSION,
-        model_used=model_used,
-        prompt_version=PROMPT_VERSION,
-    )
-
-    # Per-candidate metadata with domain/lookback info
-    per_candidate = {}
-    for ec, cand in zip(extraction.criteria, pack.candidates):
-        per_candidate[cand.candidate_id] = {
-            "domain": ec.domain,
-            "operational_detail": ec.operational_detail,
-            "lookback_window": ec.lookback_window,
-        }
-    pack.concept_metadata = {"per_candidate": per_candidate}
-
-    return pack
