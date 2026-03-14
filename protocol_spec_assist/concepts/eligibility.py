@@ -204,6 +204,7 @@ def find_inclusion_criteria(
         return EvidencePack(
             protocol_id=protocol_id, concept=CONCEPT_INC,
             candidates=[], low_retrieval_signal=True,
+            overall_confidence=0.0,
             finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
         )
 
@@ -220,9 +221,10 @@ def find_inclusion_criteria(
         ta_warning=ta_warning,
     )
 
+    _conf = f"{pack.overall_confidence:.2f}" if pack.overall_confidence is not None else "N/A"
     print(f"[InclusionFinder] Done. "
           f"{len(pack.candidates)} criteria | "
-          f"confidence={pack.overall_confidence:.2f}")
+          f"confidence={_conf}")
 
     return pack
 
@@ -261,6 +263,7 @@ def find_exclusion_criteria(
         return EvidencePack(
             protocol_id=protocol_id, concept=CONCEPT_EXC,
             candidates=[], low_retrieval_signal=True,
+            overall_confidence=0.0,
             finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
         )
 
@@ -277,9 +280,10 @@ def find_exclusion_criteria(
         ta_warning=ta_warning,
     )
 
+    _conf = f"{pack.overall_confidence:.2f}" if pack.overall_confidence is not None else "N/A"
     print(f"[ExclusionFinder] Done. "
           f"{len(pack.candidates)} criteria | "
-          f"confidence={pack.overall_confidence:.2f}")
+          f"confidence={_conf}")
 
     return pack
 
@@ -318,6 +322,7 @@ def _two_pass_extract(
         return EvidencePack(
             protocol_id=protocol_id, concept=concept,
             candidates=[], low_retrieval_signal=True,
+            overall_confidence=0.0,
             finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
             model_used=model_used,
         )
