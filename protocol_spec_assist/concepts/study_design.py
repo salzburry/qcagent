@@ -3,8 +3,15 @@ Study design concept finders: data_prep_dates and censoring_rules.
 
 data_prep_dates replaces the old monolithic study_period concept.
 It targets the exact rows needed by the Data Prep tab:
-  - Important Dates: INIT, INDEX, FUED, CENSDT, ENROLLDT
+  - Important Dates: INIT, INDEX, FUED, CENSDT, ENROLLDT, MININDEX,
+                     MAXINDEX, MINAVAILDATE, LSTACTDT
   - Time Periods: STUDY_PD, PRE_INT, FU, BASELINE, WASHOUT, ASSESS_*
+
+Two-pass extraction:
+  Pass 1 (local): Mine date-like candidate phrases from retrieved chunks
+                  using regex/heuristic patterns. No LLM cost.
+  Pass 2 (LLM):  Classify each mined candidate into the target variable set.
+                  Cheaper and more reliable than one-shot schema extraction.
 
 This structured extraction is the fix for the vendor's GPT-4 failure on
 study period — the model is now asked for specific, named rows rather than
@@ -13,6 +20,7 @@ a vague "extract the study period" instruction.
 
 from __future__ import annotations
 import hashlib
+import re
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -22,8 +30,8 @@ from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
 from .base import CONFIDENCE_THRESHOLD, build_context, compute_low_signal, try_adjudicator
 
-FINDER_VERSION = "0.4.0"
-PROMPT_VERSION = "0.4.0"
+FINDER_VERSION = "0.5.0"
+PROMPT_VERSION = "0.5.0"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -43,7 +51,8 @@ class DataPrepExtraction(BaseModel):
         chunk_id: Optional[str] = None
         quoted_text: str
         variable: str = Field(
-            description="Variable name: INIT | INDEX | FUED | CENSDT | ENROLLDT | other"
+            description="Variable name: INIT | INDEX | FUED | CENSDT | ENROLLDT | "
+            "MININDEX | MAXINDEX | MINAVAILDATE | LSTACTDT | other"
         )
         label: str = Field(
             description="Human-readable label, e.g. 'Initial DLBCL diagnosis date'"
@@ -126,11 +135,16 @@ in a real-world data analytics program specification (Data Prep tab).
 - FUED: follow-up end date (last known activity, data cutoff, end of observation)
 - CENSDT: censoring date (when observation is censored for a reason other than the event)
 - ENROLLDT: enrollment/continuous enrollment start date
+- MININDEX: earliest allowable index date (study start boundary)
+- MAXINDEX: latest allowable index date (study end boundary)
+- MINAVAILDATE: minimum data availability date (earliest record required per patient)
+- LSTACTDT: last activity date (last known encounter/record in database)
 
 ## Time Periods to look for:
 - STUDY_PD: full study period (calendar start through calendar end)
 - PRE_INT: pre-index period (e.g. 12 months before INDEX for baseline assessment)
-- FU: follow-up period (INDEX to FUED or event)
+- FU: follow-up period (INDEX to FUED or event). NOTE: FU is a PERIOD, defined as
+  the span from INDEX to FUED. Do NOT just copy the FUED end-anchor definition.
 - BASELINE: baseline assessment window (often same as PRE_INT or a subset)
 - WASHOUT: treatment washout window (gap before INDEX to ensure treatment-naive)
 - ASSESS_*: specific assessment windows (e.g. ASSESS_ECOG, ASSESS_LAB)
@@ -139,6 +153,12 @@ in a real-world data analytics program specification (Data Prep tab).
 - Data source name (e.g. Optum CDM, CPRD GOLD, Flatiron, COTA)
 - Data source version or data cut date
 - Study design type (retrospective_cohort, prospective_cohort, case_control, etc.)
+
+## Pre-mined date candidates:
+The user prompt may include a "PRE-MINED DATE CANDIDATES" section listing
+date-like phrases found locally in the protocol text. Use these as hints —
+classify each relevant candidate into the correct variable. You may also
+find dates/periods NOT in the pre-mined list.
 
 Rules:
 - For each date/period, provide the OPERATIONAL DEFINITION with date arithmetic
@@ -151,17 +171,82 @@ Rules:
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
+# ── Pass 1: Local date candidate mining (no LLM) ─────────────────────────────
+
+# Patterns that indicate date-like concepts in protocol text
+_DATE_PATTERNS = [
+    # Explicit date references: "January 1, 2018", "01/01/2018", etc.
+    re.compile(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b', re.IGNORECASE),
+    re.compile(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b'),
+    re.compile(r'\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b'),
+    # Relative date references: "365 days before index", "12 months prior"
+    re.compile(r'\b\d+\s*(?:days?|months?|weeks?|years?)\s*(?:before|after|prior|following|from|post)\b', re.IGNORECASE),
+    # Date variable keywords
+    re.compile(r'\b(?:index\s*date|cohort\s*entry|treatment\s*initiation|first\s*(?:dose|dispensing|prescription|diagnosis))\b', re.IGNORECASE),
+    re.compile(r'\b(?:follow[- ]?up\s*(?:end|period)?|end\s*of\s*(?:observation|study|data|follow))\b', re.IGNORECASE),
+    re.compile(r'\b(?:enrollment|enrolment|continuous\s*(?:eligibility|enrollment))\b', re.IGNORECASE),
+    re.compile(r'\b(?:baseline|washout|pre[- ]?index|lookback)\b', re.IGNORECASE),
+    re.compile(r'\b(?:data\s*(?:cut|cutoff|availability)|last\s*(?:activity|encounter|record|claim))\b', re.IGNORECASE),
+    re.compile(r'\b(?:censoring|censored|administrative\s*censor)\b', re.IGNORECASE),
+    re.compile(r'\b(?:study\s*period|observation\s*(?:period|window)|assessment\s*(?:period|window))\b', re.IGNORECASE),
+    # Boundary dates: "earliest allowable", "latest allowable"
+    re.compile(r'\b(?:earliest|latest|minimum|maximum)\s*(?:allowable|eligible)?\s*(?:index|date|enrollment)\b', re.IGNORECASE),
+]
+
+
+def _mine_date_candidates(chunks: list[RetrievedChunk]) -> list[dict]:
+    """Mine date-like candidate phrases from retrieved chunks.
+
+    Returns a list of dicts with keys: text, chunk_id, page, pattern_type.
+    Each entry is a sentence or phrase containing a date-like pattern.
+    """
+    candidates = []
+    seen_texts = set()
+
+    for chunk in chunks:
+        # Split into sentences for more precise candidate extraction
+        sentences = re.split(r'(?<=[.!?])\s+|\n', chunk.text)
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if len(sentence) < 15 or len(sentence) > 500:
+                continue
+
+            for pattern in _DATE_PATTERNS:
+                if pattern.search(sentence):
+                    # Dedupe by normalized text
+                    norm = sentence.lower().strip()
+                    if norm not in seen_texts:
+                        seen_texts.add(norm)
+                        candidates.append({
+                            "text": sentence,
+                            "chunk_id": chunk.chunk_id,
+                            "page": chunk.page,
+                            "heading": chunk.heading,
+                        })
+                    break  # one match per sentence is enough
+
+    return candidates
+
+
 def find_data_prep_dates(
     protocol_id: str,
     index: ProtocolIndex,
     client: LocalModelClient,
     ta_pack: Optional[TAPack] = None,
 ) -> EvidencePack:
-    """Extract Data Prep important dates and time periods from the protocol."""
+    """Extract Data Prep important dates and time periods from the protocol.
+
+    Two-pass approach:
+      Pass 1 (local): Mine date-like candidate phrases from retrieved chunks.
+      Pass 2 (LLM): Classify candidates into target variables (INIT, INDEX, etc.).
+    """
 
     queries = build_query_bank(
         "study period index date follow-up enrollment baseline washout "
-        "data source database study dates cohort entry diagnosis date",
+        "data source database study dates cohort entry diagnosis date "
+        "earliest allowable index latest allowable index data availability "
+        "last activity date minimum data date",
         ta_pack, CONCEPT_SP,  # use study_period synonyms from TA pack
     )
 
@@ -183,9 +268,31 @@ def find_data_prep_dates(
             finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
         )
 
+    # Pass 1: Mine date candidates locally (no LLM cost)
+    mined_candidates = _mine_date_candidates(chunks)
+    print(f"[DataPrepFinder] Pass 1: mined {len(mined_candidates)} date candidates from {len(chunks)} chunks")
+
+    # Build context with pre-mined candidates appended as hints
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_SP)
     context = build_context(chunks, ta_warning, protocol_id)
 
+    if mined_candidates:
+        candidate_lines = []
+        for mc in mined_candidates:
+            candidate_lines.append(
+                f"  - [chunk_id={mc['chunk_id']} | page={mc['page']}] \"{mc['text']}\""
+            )
+        context += (
+            "\n\n---\n\n## PRE-MINED DATE CANDIDATES\n"
+            "The following date-like phrases were found in the protocol text.\n"
+            "Classify each relevant one into the appropriate variable (INIT, INDEX, "
+            "FUED, CENSDT, ENROLLDT, MININDEX, MAXINDEX, MINAVAILDATE, LSTACTDT) "
+            "or time period (STUDY_PD, PRE_INT, FU, BASELINE, WASHOUT, ASSESS_*).\n"
+            "You may also extract dates/periods NOT listed here.\n\n"
+            + "\n".join(candidate_lines)
+        )
+
+    # Pass 2: LLM classification of candidates into target variables
     result = client.extract(
         system_prompt=SYSTEM_PROMPT_DP,
         user_prompt=context,
@@ -206,7 +313,7 @@ def find_data_prep_dates(
 
     n_dates = len(extraction.important_dates)
     n_periods = len(extraction.time_periods)
-    print(f"[DataPrepFinder] Done. "
+    print(f"[DataPrepFinder] Pass 2: "
           f"{n_dates} dates + {n_periods} periods | "
           f"confidence={extraction.overall_confidence:.2f} | "
           f"data_source={extraction.data_source or 'not found'}")

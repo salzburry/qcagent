@@ -332,13 +332,16 @@ def build_program_spec(
                 d for d in spec.important_dates if d.variable != "FUED"
             ] + [extracted_fued]
 
-            # Add FU time period if not already present from study_period extraction
+            # Add FU time period if not already present from study_period extraction.
+            # FU is the period from INDEX to FUED — NOT the same as the FUED definition.
+            # FUED describes the end anchor; FU is the full observation window.
             existing_period_names = {p.time_period for p in spec.time_periods}
             if "FU" not in existing_period_names:
+                fu_definition = f"Period from INDEX date to follow-up end date (FUED). FUED defined as: {gov_text}"
                 spec.time_periods.append(TimePeriod(
                     time_period="FU",
                     label="Follow-up period",
-                    definition=gov_text,
+                    definition=fu_definition,
                     source_page=cand.page if cand else None,
                     confidence=cand.llm_confidence if cand else None,
                 ))

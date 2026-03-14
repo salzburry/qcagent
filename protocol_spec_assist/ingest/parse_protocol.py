@@ -239,62 +239,112 @@ def _sliding_window(text: str, max_chars: int = 1500, overlap: int = 200) -> lis
 
 def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedProtocol:
     """
-    Parse a protocol PDF using Docling with quality-gated fallback to PyMuPDF.
+    Parse a protocol PDF using a multi-strategy approach with quality gating.
 
-    1. Try Docling (best table/layout preservation).
-    2. Score the result — if grade is "fail", fall back to PyMuPDF.
-    3. PyMuPDF result is post-processed to merge micro-sections.
+    Strategy order:
+    1. Docling (no OCR) — best table/layout preservation for clean PDFs.
+    2. Docling (with OCR) — handles scanned or image-heavy PDFs.
+    3. PyMuPDF heading-based — lightweight structural parse with micro-section merging.
+    4. PyMuPDF page-first — last resort; treats each page as a section, no heading
+       detection. Produces fewer, larger sections that avoid junk-heading fragmentation.
+
+    Each strategy is scored. The first to reach "pass" or "warn" is returned.
+    If all strategies produce "fail", the best-scoring result is returned so
+    the downstream fail-closed gate in protocol_run can emit a shell spec.
     """
     path = Path(pdf_path)
     pid = protocol_id or path.stem
 
-    # Try Docling first
-    try:
-        result = _parse_with_docling(path, pid)
+    best: Optional[ParsedProtocol] = None
+    best_score: float = -1.0
+
+    def _score_value(q: ParseQuality) -> float:
+        """Numeric score for comparing quality across strategies."""
+        grade_map = {"pass": 2.0, "warn": 1.0, "fail": 0.0}
+        return grade_map.get(q.grade, 0.0) + (1.0 - q.empty_ratio) * 0.5 + min(q.median_text_len / 200.0, 0.5)
+
+    def _try_strategy(result: ParsedProtocol, label: str) -> bool:
+        """Score a parse result. Returns True if acceptable (pass/warn)."""
+        nonlocal best, best_score
         quality = _quality_score(result)
         result.quality = quality
-        print(f"[Parser] Docling: {quality}")
+        sv = _score_value(quality)
+        print(f"[Parser] {label}: {quality}")
+        if sv > best_score:
+            best = result
+            best_score = sv
+        return quality.grade in ("pass", "warn")
 
-        if quality.grade == "fail":
-            print("[Parser] Docling parse quality too low, falling back to PyMuPDF.")
-            fallback = _parse_with_pymupdf(path, pid)
-            fallback = _merge_micro_sections(fallback)
-            fallback.quality = _quality_score(fallback)
-            print(f"[Parser] PyMuPDF (merged): {fallback.quality}")
-            return fallback
-        return result
+    # Strategy 1: Docling (no OCR)
+    try:
+        result = _parse_with_docling(path, pid, do_ocr=False)
+        if _try_strategy(result, "Docling (no OCR)"):
+            return best
+
+        # Strategy 2: Docling (with OCR) — recovers scanned/image PDFs
+        print("[Parser] Trying Docling with OCR enabled...")
+        try:
+            result_ocr = _parse_with_docling(path, pid, do_ocr=True)
+            if _try_strategy(result_ocr, "Docling (OCR)"):
+                return best
+        except Exception as e:
+            print(f"[Parser] Docling OCR failed ({type(e).__name__}: {e}), continuing to PyMuPDF.")
 
     except ImportError:
         print("[Parser] Docling not installed, falling back to PyMuPDF.")
         print("[Parser] Install: pip install docling")
-        fallback = _parse_with_pymupdf(path, pid)
-        fallback = _merge_micro_sections(fallback)
-        fallback.quality = _quality_score(fallback)
-        print(f"[Parser] PyMuPDF (merged): {fallback.quality}")
-        return fallback
-
     except Exception as e:
         print(f"[Parser] Docling failed ({type(e).__name__}: {e}), falling back to PyMuPDF.")
+
+    # Strategy 3: PyMuPDF heading-based with micro-section merging
+    try:
         fallback = _parse_with_pymupdf(path, pid)
         fallback = _merge_micro_sections(fallback)
-        fallback.quality = _quality_score(fallback)
-        print(f"[Parser] PyMuPDF (merged): {fallback.quality}")
-        return fallback
+        if _try_strategy(fallback, "PyMuPDF heading-based (merged)"):
+            return best
+    except Exception as e:
+        print(f"[Parser] PyMuPDF heading-based failed ({type(e).__name__}: {e}).")
+
+    # Strategy 4: PyMuPDF page-first — no heading detection, one section per page.
+    # This avoids the junk-heading problem entirely for difficult PDFs.
+    try:
+        page_first = _parse_with_pymupdf_page_first(path, pid)
+        if _try_strategy(page_first, "PyMuPDF page-first"):
+            return best
+    except Exception as e:
+        print(f"[Parser] PyMuPDF page-first failed ({type(e).__name__}: {e}).")
+
+    # Return whatever we got (even if "fail" — let downstream gate handle it)
+    if best is not None:
+        return best
+
+    # Absolute fallback: empty protocol
+    return ParsedProtocol(
+        protocol_id=pid, title=None, sections=[],
+        quality=ParseQuality(
+            n_sections=0, median_heading_len=0, median_text_len=0,
+            table_count=0, empty_ratio=1.0, grade="fail",
+        ),
+    )
 
 
 # ── Docling parser ────────────────────────────────────────────────────────────
 
-def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
+def _parse_with_docling(path: Path, protocol_id: str, do_ocr: bool = False) -> ParsedProtocol:
     """
     Docling parse — preserves tables, reading order, layout.
     pip install docling
+
+    Args:
+        do_ocr: Enable OCR for scanned/image-heavy PDFs. Slower but recovers
+                text from non-selectable pages.
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
 
     options = PdfPipelineOptions()
-    options.do_ocr = False              # set True for scanned PDFs
+    options.do_ocr = do_ocr
     options.do_table_structure = True   # critical — preserves table structure
 
     converter = DocumentConverter(
@@ -408,8 +458,13 @@ def _parse_with_docling(path: Path, protocol_id: str) -> ParsedProtocol:
 
 def _parse_with_pymupdf(path: Path, protocol_id: str) -> ParsedProtocol:
     """
-    PyMuPDF fallback — less accurate on tables but functional.
+    PyMuPDF heading-based fallback — less accurate on tables but functional.
     pip install pymupdf
+
+    Improved heading detection: a bold/large span is only treated as a heading if it:
+      - has at least 5 characters (avoids single-word/number junk headings)
+      - contains at least one letter (avoids bullet markers, page numbers)
+      - is the dominant span in its line (not a bold word inside a paragraph)
     """
     import fitz
 
@@ -426,13 +481,33 @@ def _parse_with_pymupdf(path: Path, protocol_id: str) -> ParsedProtocol:
             if block["type"] != 0:
                 continue
             for line in block["lines"]:
-                for span in line["spans"]:
+                # Collect all spans in this line to check if heading-candidate
+                # is the dominant span (not just an inline bold word)
+                line_spans = [s for s in line["spans"] if s["text"].strip()]
+                line_text_len = sum(len(s["text"].strip()) for s in line_spans)
+
+                for span in line_spans:
                     text = span["text"].strip()
                     if not text:
                         continue
                     is_bold = "bold" in span["font"].lower()
                     is_large = span["size"] > 11
-                    if (is_bold or is_large) and len(text) < 120:
+
+                    # Improved heading heuristics:
+                    # 1. Must be bold or large
+                    # 2. Must have >= 5 chars (avoid junk like "1.", "•", "A")
+                    # 3. Must contain at least one letter
+                    # 4. Must be < 120 chars
+                    # 5. This span must be the majority of the line text
+                    #    (avoids treating inline bold words as headings)
+                    is_heading_candidate = (
+                        (is_bold or is_large)
+                        and 5 <= len(text) < 120
+                        and any(c.isalpha() for c in text)
+                        and (len(text) >= line_text_len * 0.7 or line_text_len < 80)
+                    )
+
+                    if is_heading_candidate:
                         if current_text.strip():
                             sections.append(ParsedSection(
                                 heading=current_heading,
@@ -461,6 +536,78 @@ def _parse_with_pymupdf(path: Path, protocol_id: str) -> ParsedProtocol:
 
     doc.close()
     return ParsedProtocol(protocol_id=protocol_id, title=None, sections=sections)
+
+
+def _parse_with_pymupdf_page_first(path: Path, protocol_id: str) -> ParsedProtocol:
+    """
+    PyMuPDF page-first fallback — one section per page, no heading detection.
+
+    This avoids the junk-heading fragmentation problem entirely. Each page
+    becomes a single section with a synthetic heading ("Page N"). The result
+    has fewer, larger sections that are better for retrieval even if structural
+    headings are lost.
+
+    Also attempts basic table extraction from each page.
+    """
+    import fitz
+
+    doc = fitz.open(str(path))
+    sections = []
+    title = None
+
+    for page_num, page in enumerate(doc, start=1):
+        # Extract all text on the page
+        page_text = page.get_text("text").strip()
+
+        if not page_text:
+            continue
+
+        # Use the first non-trivial text line from page 1 as title
+        if title is None and page_num == 1:
+            for line in page_text.split("\n"):
+                line = line.strip()
+                if len(line) > 10 and any(c.isalpha() for c in line):
+                    title = line[:120]
+                    break
+
+        # Try to extract tables from this page
+        try:
+            tables = page.find_tables()
+            if tables and tables.tables:
+                for tbl_idx, table in enumerate(tables.tables):
+                    table_data = []
+                    df_rows = table.extract()
+                    if df_rows and len(df_rows) > 1:
+                        headers = [str(h or f"col_{i}") for i, h in enumerate(df_rows[0])]
+                        for row in df_rows[1:]:
+                            table_data.append(dict(zip(headers, [str(v or "") for v in row])))
+
+                    if table_data:
+                        table_text = _table_to_text(table_data)
+                        sections.append(ParsedSection(
+                            heading=f"Page {page_num} | Table {tbl_idx + 1}",
+                            heading_level=2,
+                            text=table_text,
+                            page_start=page_num,
+                            page_end=page_num,
+                            source_type="table",
+                            table_data=table_data,
+                        ))
+        except Exception:
+            pass  # table extraction is best-effort
+
+        # Add narrative section for the page
+        sections.append(ParsedSection(
+            heading=f"Page {page_num}",
+            heading_level=1,
+            text=page_text,
+            page_start=page_num,
+            page_end=page_num,
+            source_type="narrative",
+        ))
+
+    doc.close()
+    return ParsedProtocol(protocol_id=protocol_id, title=title, sections=sections)
 
 
 # ── Post-processing: merge micro-sections ─────────────────────────────────────

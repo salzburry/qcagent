@@ -17,27 +17,30 @@ from ..spec_output.spec_schema import (
 from ..data_sources.registry import get_definition, detect_source
 
 
-# Canonical important date variables and their default labels
+# Canonical important date variables and their default labels.
+# IMPORTANT: Default definitions use explicit [UNRESOLVED] markers rather than
+# plausible-sounding text. This prevents unextracted placeholders from being
+# mistaken for real protocol-backed definitions.
 _DATE_DEFAULTS = {
     "INIT": {
         "label": "Initial diagnosis date",
-        "definition": "Date of first qualifying diagnosis",
+        "definition": "[UNRESOLVED] Definition must be extracted from protocol or specified by study team",
     },
     "INDEX": {
         "label": "Index date",
-        "definition": "Date of cohort entry / treatment initiation",
+        "definition": "[UNRESOLVED] Definition must be extracted from protocol or specified by study team",
     },
     "FUED": {
         "label": "Follow-up end date",
-        "definition": "Last date of data availability or end of observation",
+        "definition": "[UNRESOLVED] Definition must be extracted from protocol or specified by study team",
     },
     "CENSDT": {
         "label": "Censoring date",
-        "definition": "Date of censoring (if not event)",
+        "definition": "[UNRESOLVED] Definition must be extracted from protocol or specified by study team",
     },
     "ENROLLDT": {
         "label": "Enrollment start date",
-        "definition": "Start of continuous enrollment period",
+        "definition": "[UNRESOLVED] Definition must be extracted from protocol or specified by study team",
     },
 }
 
@@ -121,18 +124,25 @@ def expand_data_prep(
     for required_var in ["INIT", "INDEX", "FUED"]:
         if required_var not in seen_variables:
             defaults = _DATE_DEFAULTS[required_var]
-            definition = get_definition(data_source_key, required_var, defaults["definition"])
+            # Use source-specific definition only if available; otherwise
+            # keep the [UNRESOLVED] default — never fabricate a plausible definition
+            source_def = get_definition(data_source_key, required_var, "")
+            definition = source_def if source_def else defaults["definition"]
             important_dates.append(ImportantDate(
                 variable=required_var,
                 label=defaults["label"],
                 definition=definition,
-                additional_notes="[PLACEHOLDER] auto-generated — not found in protocol text. "
-                                "Will be replaced by extracted evidence if available.",
+                additional_notes="[UNRESOLVED PLACEHOLDER] Auto-generated — not found in protocol text. "
+                                "Will be replaced by extracted evidence if available. "
+                                "Must be reviewed and confirmed by study team.",
                 confidence=None,
             ))
 
-    # Sort by canonical order
-    date_order = ["INIT", "INDEX", "FUED", "CENSDT", "ENROLLDT"]
+    # Sort by canonical order (expanded to include new date variables)
+    date_order = [
+        "INIT", "INDEX", "FUED", "CENSDT", "ENROLLDT",
+        "MININDEX", "MAXINDEX", "MINAVAILDATE", "LSTACTDT",
+    ]
     important_dates.sort(key=lambda d: (
         date_order.index(d.variable) if d.variable in date_order else 99
     ))
