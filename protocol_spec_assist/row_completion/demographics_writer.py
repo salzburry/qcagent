@@ -90,12 +90,23 @@ class DemographicsWriter(RowWriter):
         # Check which families are mentioned in the evidence
         mentioned_families = self._detect_mentioned_families(pack, meta)
 
+        # Determine whether we have real (non-static) evidence.
+        # A pack with no candidates, or only candidates that lack both a
+        # source page and LLM confidence, is "static-only" — its rows
+        # must NOT look like evidence-backed rows.
+        has_real_evidence = self._has_real_evidence(pack)
+
         for family_key, family_def in self.FAMILIES.items():
             # Always include core demographics (AGE, SEX, RACE, ETHNICITY)
             # Only include optional demographics if mentioned in evidence
             is_core = family_key in {"AGE", "SEX", "RACE", "ETHNICITY"}
             if not is_core and family_key not in mentioned_families:
                 continue
+
+            # Determine whether this specific family has evidence backing
+            family_has_evidence = has_real_evidence and (
+                is_core or family_key in mentioned_families
+            )
 
             for var in family_def["variables"]:
                 # Get source-specific definition
@@ -116,6 +127,22 @@ class DemographicsWriter(RowWriter):
                 else:
                     label = family_def["label"]
 
+                # Static-only evidence: mark as unresolved, no source page,
+                # no confidence, and add review-required note
+                if family_has_evidence:
+                    source_page = gov_candidate.page if gov_candidate else None
+                    confidence = gov_candidate.llm_confidence if gov_candidate else None
+                    explicit_val = "explicit" if is_core else "inferred"
+                    additional_notes = ""
+                else:
+                    source_page = None
+                    confidence = None
+                    explicit_val = "inferred"
+                    additional_notes = (
+                        "[UNRESOLVED] Auto-generated from standard template — "
+                        "no protocol evidence found. Review required."
+                    )
+
                 rows.append(VariableRow(
                     time_period=family_def["time_period"],
                     variable=var,
@@ -123,13 +150,27 @@ class DemographicsWriter(RowWriter):
                     values="",
                     definition=definition,
                     code_lists_group="",
-                    additional_notes="",
-                    source_page=gov_candidate.page if gov_candidate else None,
-                    confidence=gov_candidate.llm_confidence if gov_candidate else None,
-                    explicit="explicit" if is_core else "inferred",
+                    additional_notes=additional_notes,
+                    source_page=source_page,
+                    confidence=confidence,
+                    explicit=explicit_val,
                 ))
 
         return rows
+
+    def _has_real_evidence(self, pack: EvidencePack) -> bool:
+        """Check if the pack contains any candidates with real provenance.
+
+        A candidate counts as real evidence if it has a source page OR
+        an LLM confidence score — indicating it was actually extracted
+        from protocol text, not just populated from static defaults.
+        """
+        if not pack.candidates:
+            return False
+        return any(
+            c.page is not None or c.llm_confidence is not None
+            for c in pack.candidates
+        )
 
     def _detect_mentioned_families(
         self,

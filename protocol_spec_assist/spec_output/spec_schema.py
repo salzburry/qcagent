@@ -332,13 +332,16 @@ def build_program_spec(
                 d for d in spec.important_dates if d.variable != "FUED"
             ] + [extracted_fued]
 
-            # Add FU time period if not already present from study_period extraction
+            # Add FU time period if not already present from study_period extraction.
+            # FU is the period from INDEX to FUED — NOT the same as the FUED definition.
+            # FUED describes the end anchor; FU is the full observation window.
             existing_period_names = {p.time_period for p in spec.time_periods}
             if "FU" not in existing_period_names:
+                fu_definition = f"Period from INDEX date to follow-up end date (FUED). FUED defined as: {gov_text}"
                 spec.time_periods.append(TimePeriod(
                     time_period="FU",
                     label="Follow-up period",
-                    definition=gov_text,
+                    definition=fu_definition,
                     source_page=cand.page if cand else None,
                     confidence=cand.llm_confidence if cand else None,
                 ))
@@ -400,6 +403,38 @@ def build_program_spec(
                 confidence=cand.llm_confidence,
                 explicit=cand.explicit,
                 source_page=cand.page,
+            ))
+
+    # ── StudyPop: cohort definitions (Section B) ──
+    if "cohort_definitions" in packs:
+        coh_pack = packs["cohort_definitions"]
+        coh_meta = (coh_pack.concept_metadata or {}).get("per_candidate", {})
+        coh_candidates = coh_pack.selected_candidates if coh_pack.selected_candidates is not None else coh_pack.candidates
+        for cand in coh_candidates:
+            cm = coh_meta.get(cand.candidate_id, {})
+            spec.cohort_definitions.append(CohortRow(
+                variable=cm.get("cohort_variable", cand.sponsor_term or ""),
+                label=cm.get("cohort_label", cand.sponsor_term or ""),
+                values=cm.get("values", ""),
+                definition=cm.get("definition", cand.snippet),
+                additional_notes=f'Protocol text: "{cand.snippet}"' if cm.get("definition") else "",
+                source_page=cand.page,
+                confidence=cand.llm_confidence,
+            ))
+
+    # ── Data Prep: source data preparation issues (Section D) ──
+    if "source_data_prep" in packs:
+        sdp_pack = packs["source_data_prep"]
+        sdp_meta = (sdp_pack.concept_metadata or {}).get("per_candidate", {})
+        sdp_candidates = sdp_pack.selected_candidates if sdp_pack.selected_candidates is not None else sdp_pack.candidates
+        for i, cand in enumerate(sdp_candidates, 1):
+            cm = sdp_meta.get(cand.candidate_id, {})
+            spec.source_data_prep.append(SourceDataPrep(
+                row_number=i,
+                source_table_variable=cm.get("source_table_variable", cand.sponsor_term or ""),
+                situation=cm.get("situation", ""),
+                action=cm.get("action", ""),
+                reasoning=cm.get("reasoning", cand.snippet),
             ))
 
     # ── Demographics: via DemographicsWriter ──
