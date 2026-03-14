@@ -7,10 +7,17 @@ Detects GPU compute capability and works around known issues:
   Fix: uninstalls flashinfer, falls back to compatible attention backend
 - Ampere+ (sm_80+): no workaround needed, all backends supported
 
+GPU-aware model auto-selection:
+- A100 40GB: Qwen3-14B (fits in VRAM, good extraction quality)
+- A100 80GB / H100: Qwen3-235B-A22B (MoE, best quality)
+- Override with --model flag
+
 Usage (in a notebook cell or terminal):
-    python setup_vllm.py                     # auto-detect everything
+    python setup_vllm.py                     # auto-detect GPU + pick model
     python setup_vllm.py --port 8001         # custom port
-    python setup_vllm.py --model Qwen/Qwen3-235B-A22B  # MoE (H100)
+    python setup_vllm.py --model Qwen/Qwen3-14B           # Colab A100 40GB
+    python setup_vllm.py --model Qwen/Qwen3-235B-A22B     # MoE (H100)
+    python setup_vllm.py --tier colab_a100                 # use tier preset
 """
 
 import argparse
@@ -106,10 +113,40 @@ def get_gpu_free_memory_gb():
         return None
 
 
-def pick_max_model_len(gpu_name, cap_major):
+def get_gpu_vram_gb():
+    """Return total GPU VRAM in GiB, or None."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            text=True,
+        ).strip().split("\n")[0]
+        return int(out.strip()) / 1024  # MiB → GiB
+    except Exception:
+        return None
+
+
+def pick_model_for_gpu(gpu_name, vram_gb):
+    """Auto-select the best model for the detected GPU."""
+    if vram_gb is None:
+        return "Qwen/Qwen3-14B"  # safe default
+    if vram_gb >= 70:
+        # H100 80GB or A100 80GB — can run the full MoE
+        return "Qwen/Qwen3-235B-A22B"
+    if vram_gb >= 30:
+        # A100 40GB — Qwen3-14B fits comfortably in FP16 (~28GB)
+        return "Qwen/Qwen3-14B"
+    # Smaller GPUs — 8B as fallback
+    return "Qwen/Qwen3-8B"
+
+
+def pick_max_model_len(gpu_name, cap_major, vram_gb=None):
     """Choose max-model-len based on GPU VRAM tier."""
     name_lower = (gpu_name or "").lower()
+    if vram_gb and vram_gb >= 70:
+        return 32768
     if "a100" in name_lower or "h100" in name_lower:
+        if vram_gb and vram_gb < 50:
+            return 16384  # A100 40GB
         return 32768
     if "v100" in name_lower or "a10" in name_lower or "rtx" in name_lower:
         return 24576
@@ -140,13 +177,17 @@ def wait_for_server(port, timeout=300, interval=5):
 
 def main():
     parser = argparse.ArgumentParser(description="Start vLLM with GPU-aware defaults")
-    parser.add_argument("--model", default="Qwen/Qwen3-235B-A22B", help="HuggingFace model ID")
+    parser.add_argument("--model", default=None,
+                        help="HuggingFace model ID (auto-detected from GPU if omitted)")
+    parser.add_argument("--tier", default=None,
+                        choices=["colab_a100", "colab_a100_single", "h100"],
+                        help="Model tier preset (overrides --model)")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
     parser.add_argument("--host", default="0.0.0.0", help="Server host")
     parser.add_argument("--max-model-len", type=int, default=None,
                         help="Max sequence length (auto-detected from GPU if omitted)")
     parser.add_argument("--quantization", default=None, help="Quantization method (e.g. awq)")
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.95)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=None)
     parser.add_argument("--no-wait", action="store_true", help="Don't wait for server to be ready")
     parser.add_argument("--set-env", action="store_true",
                         help="Set VLLM_BASE_URL and related env vars in current process")
@@ -160,6 +201,26 @@ def main():
         sys.exit(1)
 
     print(f"[setup_vllm] GPU: {gpu_name} (compute capability {cap_major}.x)")
+    vram_gb = get_gpu_vram_gb()
+    if vram_gb:
+        print(f"[setup_vllm] Total VRAM: {vram_gb:.0f} GiB")
+
+    # ── Resolve model from tier / auto-detect ───────────────────────
+    if args.tier:
+        from protocol_spec_assist.serving.model_client import MODEL_TIERS
+        tier = MODEL_TIERS[args.tier]
+        model = tier["default_model"]
+        gpu_mem_util = args.gpu_memory_utilization or tier["gpu_memory_utilization"]
+        print(f"[setup_vllm] Tier: {args.tier} — {tier['description']}")
+    elif args.model:
+        model = args.model
+        gpu_mem_util = args.gpu_memory_utilization or 0.95
+    else:
+        model = pick_model_for_gpu(gpu_name, vram_gb)
+        gpu_mem_util = args.gpu_memory_utilization or (0.90 if vram_gb and vram_gb >= 70 else 0.95)
+        print(f"[setup_vllm] Auto-selected model: {model} (based on {vram_gb:.0f} GiB VRAM)")
+
+    print(f"[setup_vllm] Model: {model}")
 
     # ── Apply T4 workaround ─────────────────────────────────────────
     if cap_major < 8:
@@ -178,19 +239,19 @@ def main():
             sys.exit(1)
 
     # ── Choose max-model-len ────────────────────────────────────────
-    max_model_len = args.max_model_len or pick_max_model_len(gpu_name, cap_major)
+    max_model_len = args.max_model_len or pick_max_model_len(gpu_name, cap_major, vram_gb)
     print(f"[setup_vllm] Using --max-model-len {max_model_len}")
 
     # ── Build vLLM command ──────────────────────────────────────────
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-        "--model", args.model,
+        "--model", model,
         "--host", args.host,
         "--port", str(args.port),
         "--max-model-len", str(max_model_len),
         "--enable-prefix-caching",
         "--dtype", "auto",
-        "--gpu-memory-utilization", str(args.gpu_memory_utilization),
+        "--gpu-memory-utilization", str(gpu_mem_util),
         "--enforce-eager",  # skip torch.compile — avoids Dynamo crash in V1 engine
     ]
     if args.quantization:
@@ -238,9 +299,11 @@ def main():
         os.environ["VLLM_BASE_URL"] = base_url
         os.environ["ADJUDICATOR_BASE_URL"] = base_url
         os.environ["VLLM_API_KEY"] = "local"
-        os.environ["DEFAULT_MODEL"] = args.model
-        os.environ["ADJUDICATOR_MODEL"] = args.model
-        print(f"[setup_vllm] Environment variables set (VLLM_BASE_URL={base_url})")
+        os.environ["DEFAULT_MODEL"] = model
+        os.environ["ADJUDICATOR_MODEL"] = model
+        if args.tier:
+            os.environ["MODEL_TIER"] = args.tier
+        print(f"[setup_vllm] Environment variables set (VLLM_BASE_URL={base_url}, model={model})")
 
     return proc
 

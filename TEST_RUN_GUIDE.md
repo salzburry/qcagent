@@ -26,23 +26,32 @@ Works on **Google Colab**, **Databricks**, or **any Linux machine with a GPU**.
 
 ## Hardware Requirements
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| **GPU (vLLM)** | 1x H100 80 GB | 1x H100 80 GB |
+### Model tiers (pick one)
+
+| Tier | GPU | VRAM | Base Model | Adjudicator | Extraction Quality |
+|------|-----|------|-----------|-------------|-------------------|
+| **colab_a100** | A100 40GB | 40 GB | Qwen3-14B | Qwen3-8B | Good (~70%) |
+| **h100** | H100 80GB | 80 GB | Qwen3-235B-A22B (MoE) | Same | Excellent (100%) |
+
+| Component | Colab A100 (40GB) | H100 (80GB) |
+|-----------|-------------------|-------------|
+| **GPU** | 1x A100 40 GB | 1x H100 80 GB |
 | **RAM** | 32 GB | 64 GB |
-| **Disk** | 100 GB free | 150 GB free |
+| **Disk** | 35 GB free (+ Drive) | 100 GB free |
 | **CPU** | 8 cores | 16+ cores |
 
 ### Model sizes on disk
 
-| Model | Size | Purpose | Required? |
-|-------|------|---------|-----------|
-| `Qwen/Qwen3-235B-A22B` | ~60 GB | LLM extractor + adjudicator (MoE) | Yes |
-| `BAAI/bge-m3` | ~2.3 GB | Embeddings (dense + sparse) | Yes |
-| `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Reranker | Yes |
-| Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing | Yes |
+| Model | Size | Purpose | Tier |
+|-------|------|---------|------|
+| `Qwen/Qwen3-14B` | ~28 GB | Base extractor (Colab) | colab_a100 |
+| `Qwen/Qwen3-8B` | ~16 GB | Adjudicator (Colab) | colab_a100 |
+| `Qwen/Qwen3-235B-A22B` | ~60 GB | MoE extractor + adjudicator | h100 |
+| `BAAI/bge-m3` | ~2.3 GB | Embeddings (dense + sparse) | All |
+| `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Reranker | All |
+| Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing | All |
 
-**Total first-time download: ~65 GB.**
+**First-time download: ~33 GB (Colab tier) or ~65 GB (H100 tier).**
 
 ---
 
@@ -54,48 +63,104 @@ Pick your environment below. After setup, all remaining steps (1–7) are **iden
 
 ### Option A: Google Colab
 
-**Cost:** Requires Colab Pro+ or Enterprise with A100/H100 access. Free tier T4 will not fit this model.
+**Cost:** Requires Colab Pro/Pro+ with A100 access. Free tier T4 does **not** have enough VRAM (8B OOMs on T4).
 
-#### A1. Create a new notebook
+**Recommended GPU: A100 40GB** (~8.3 units/hr, Qwen3-14B fits comfortably).
 
-Go to [colab.research.google.com](https://colab.research.google.com) → **New Notebook**.
+#### Compute Unit Budget (150 units = ~18 hours on A100)
 
-#### A2. Enable GPU
+| Task | Runtime | GPU | Units |
+|------|---------|-----|-------|
+| Download models to Drive | CPU (free) | None | **0** |
+| Debug/develop pipeline code | CPU (free) | None | **0** |
+| Pipeline dev & testing | A100 | ~6 hrs | **~50** |
+| Extraction runs | A100 | ~10 hrs | **~85** |
+| Buffer | — | — | **~15** |
 
-**Runtime → Change runtime type → A100 or H100 GPU** (Pro+/Enterprise).
+**Key rule: Do ALL setup on FREE CPU runtime. Switch to A100 only for inference.**
 
-Verify in a cell:
+#### A1. Mount Google Drive (CRITICAL)
+
+> **WARNING:** Colab's VM disk is only ~100GB and is wiped every session.
+> You MUST save models to Google Drive at `/content/drive/MyDrive/`, NOT `/drive/`.
+> Using `/drive` creates a local folder on the VM — your 2TB is at `/content/drive/MyDrive/`.
+
 ```python
-!nvidia-smi
-```
-You should see an A100 (40/80 GB) or H100 (80 GB).
+# Cell 1 — Mount Drive (follow the auth prompt)
+from google.colab import drive
+drive.mount('/content/drive')
 
-#### A3. Clone the repo
+# Verify — should show your Drive folders
+import os
+print(os.listdir('/content/drive/MyDrive/'))
+```
+
+#### A2. Clone the repo
 
 ```python
 !git clone https://github.com/salzburry/qcagent.git
 %cd qcagent
 ```
 
-#### A4. Upload your protocol PDF
+#### A3. Download models to Drive (run on FREE CPU runtime — costs 0 units)
+
+```python
+# This downloads ~33GB to your Drive. Takes 10-20 min. Costs ZERO compute units.
+!python colab_setup.py --download-models --tier colab_a100
+```
+
+This saves models to `/content/drive/MyDrive/qcagent_models/`. They persist across sessions — **you only download once**.
+
+#### A4. Switch to A100 and start inference
+
+**Runtime → Change runtime type → A100 GPU** (starts burning compute units now).
+
+```python
+# Re-mount Drive (new VM after runtime change)
+from google.colab import drive
+drive.mount('/content/drive')
+
+%cd qcagent
+
+# Verify GPU
+!nvidia-smi
+```
+
+You should see `A100-SXM4-40GB` or similar.
+
+#### A5. Upload your protocol PDF
 
 ```python
 import os
+
+# Option 1: Upload from local machine
 from google.colab import files
-
 os.makedirs("data/protocols", exist_ok=True)
-uploaded = files.upload()  # file picker appears
-
+uploaded = files.upload()
 for filename in uploaded:
     os.rename(filename, f"data/protocols/{filename}")
     print(f"Uploaded: data/protocols/{filename}")
+
+# Option 2: Copy from Google Drive
+# import shutil
+# shutil.copy("/content/drive/MyDrive/my_protocol.pdf", "data/protocols/")
 ```
 
-#### A5. Notes for Colab
+#### A6. Save outputs to Drive (before session ends)
 
-- Colab Pro+ sessions timeout after idle. Max runtime varies by plan.
-- Qwen3-235B-A22B requires ~60 GB VRAM. A100 80GB or H100 80GB recommended.
-- All files are lost when the session ends. Download your outputs before disconnecting (see Step 6).
+```python
+import shutil
+shutil.copytree("data/outputs", "/content/drive/MyDrive/qcagent_outputs", dirs_exist_ok=True)
+print("Outputs saved to Drive — safe from session timeout.")
+```
+
+#### A7. Notes for Colab
+
+- **Disconnect when idle** — Colab keeps billing even when you walk away.
+- Models on Drive load instantly on subsequent sessions — no re-download.
+- A100 40GB fits Qwen3-14B in full FP16 (~28GB VRAM). No quantization needed.
+- The 14B model gives ~70% of the extraction quality of the full 235B MoE.
+- When you get Databricks/H100 access, switch to `--tier h100` for the full model.
 
 **Now continue to [Step 1: Install the Package](#step-1-install-the-package).** All commands below run in Colab cells with a `!` prefix (e.g., `!pip install ...`).
 
@@ -234,12 +299,25 @@ huggingface-cli download BAAI/bge-reranker-v2-m3
 
 ### 2b. LLM model
 
+**Colab A100 40GB (tier: colab_a100):**
+```bash
+# Base extractor (~28 GB)
+huggingface-cli download Qwen/Qwen3-14B
+
+# Adjudicator (~16 GB) — or skip and use 14B for both roles
+huggingface-cli download Qwen/Qwen3-8B
+```
+
+**H100 80GB (tier: h100):**
 ```bash
 # MoE extractor + adjudicator (~60 GB)
 huggingface-cli download Qwen/Qwen3-235B-A22B
 ```
 
-Single model handles both extraction and adjudication — no separate server needed.
+**Or use the Colab helper** (downloads to Google Drive automatically):
+```bash
+python colab_setup.py --download-models --tier colab_a100
+```
 
 ### 2c. Docling models
 
@@ -255,25 +333,29 @@ Without this, Docling auto-downloads on first PDF parse (~30s extra).
 
 ### 3a. Pick the right vLLM settings for your GPU
 
-| GPU | VRAM | max-model-len | Notes |
-|-----|------|---------------|-------|
-| H100 | 80 GB | `32768` | Full context, fastest inference |
-| A100 | 80 GB | `32768` | Full context, slightly slower |
-| A100 | 40 GB | `16384` | Tight — may need `--gpu-memory-utilization 0.95` |
+| GPU | VRAM | Model | max-model-len | gpu-memory-utilization |
+|-----|------|-------|---------------|----------------------|
+| A100 | 40 GB | `Qwen/Qwen3-14B` | `16384` | `0.95` |
+| A100 | 80 GB | `Qwen/Qwen3-235B-A22B` | `32768` | `0.90` |
+| H100 | 80 GB | `Qwen/Qwen3-235B-A22B` | `32768` | `0.90` |
 
 ### 3b. Start vLLM
 
-**Recommended: use the setup script** (handles T4 compatibility automatically):
+**Recommended: use the setup script** (auto-detects GPU and picks the right model):
 
 ```bash
-python setup_vllm.py
+# Auto-detect GPU and pick model automatically
+python setup_vllm.py --set-env
+
+# Or specify a tier explicitly
+python setup_vllm.py --tier colab_a100 --set-env      # A100 40GB → Qwen3-14B
+python setup_vllm.py --tier h100 --set-env             # H100 80GB → Qwen3-235B-A22B
 ```
 
-This auto-detects your GPU, applies workarounds, picks `--max-model-len`, and waits for the server to be ready.
-
 **What `setup_vllm.py` does automatically:**
-- Kills stale GPU processes from previous crashed runs (prevents "not enough free memory" errors)
-- Checks free GPU memory before launching and aborts early with a clear message if insufficient
+- Detects GPU VRAM and picks the best model (14B for 40GB, 235B for 80GB)
+- Kills stale GPU processes from previous crashed runs
+- Checks free GPU memory before launching
 - Applies T4/sm_75 flashinfer workaround (see [T4 troubleshooting](#troubleshooting-vllm-crashes-on-t4-flashinfer))
 - Uses `--enforce-eager` and `VLLM_USE_V1=0` to avoid V1 engine core crashes
 - Dumps last 80 lines of stderr on failure for diagnosis
@@ -282,10 +364,23 @@ Options:
 ```bash
 python setup_vllm.py --port 8001                                    # custom port
 python setup_vllm.py --max-model-len 16384                         # reduce context if needed
-python setup_vllm.py --set-env                                      # auto-set env vars
+python setup_vllm.py --model Qwen/Qwen3-14B                       # explicit model
 ```
 
-**Manual start** (separate terminal or notebook background process):
+**Manual start — Colab A100 40GB:**
+
+```bash
+vllm serve Qwen/Qwen3-14B \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --max-model-len 16384 \
+    --enable-prefix-caching \
+    --dtype auto \
+    --gpu-memory-utilization 0.95 \
+    --enforce-eager
+```
+
+**Manual start — H100 80GB:**
 
 ```bash
 vllm serve Qwen/Qwen3-235B-A22B \
@@ -297,22 +392,22 @@ vllm serve Qwen/Qwen3-235B-A22B \
     --gpu-memory-utilization 0.90
 ```
 
-Adjust `--max-model-len` per the table above.
-
-**In a notebook** (Colab or Databricks), start as a background process:
+**In a Colab notebook** (background process):
 
 ```python
 import subprocess
 
+# For A100 40GB — Qwen3-14B
 vllm_proc = subprocess.Popen(
     [
-        "vllm", "serve", "Qwen/Qwen3-235B-A22B",
+        "vllm", "serve", "Qwen/Qwen3-14B",
         "--host", "0.0.0.0",
         "--port", "8000",
-        "--max-model-len", "32768",       # H100 can handle full context
+        "--max-model-len", "16384",
         "--enable-prefix-caching",
         "--dtype", "auto",
-        "--gpu-memory-utilization", "0.90",
+        "--gpu-memory-utilization", "0.95",
+        "--enforce-eager",
     ],
     stdout=open("vllm_stdout.log", "w"),
     stderr=open("vllm_stderr.log", "w"),
@@ -348,40 +443,53 @@ curl http://localhost:8000/v1/models
 
 ### 3d. Set environment variables
 
+**Colab A100 40GB (Qwen3-14B):**
+```bash
+export VLLM_BASE_URL=http://localhost:8000/v1
+export ADJUDICATOR_BASE_URL=http://localhost:8000/v1
+export VLLM_API_KEY=local
+export DEFAULT_MODEL=Qwen/Qwen3-14B
+export ADJUDICATOR_MODEL=Qwen/Qwen3-14B
+export MODEL_TIER=colab_a100
+```
+
+**H100 80GB (Qwen3-235B-A22B):**
 ```bash
 export VLLM_BASE_URL=http://localhost:8000/v1
 export ADJUDICATOR_BASE_URL=http://localhost:8000/v1
 export VLLM_API_KEY=local
 export DEFAULT_MODEL=Qwen/Qwen3-235B-A22B
 export ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B
+export MODEL_TIER=h100
 ```
 
 In a notebook:
 ```python
 import os
+# For Colab A100 40GB:
 os.environ["VLLM_BASE_URL"] = "http://localhost:8000/v1"
 os.environ["ADJUDICATOR_BASE_URL"] = "http://localhost:8000/v1"
 os.environ["VLLM_API_KEY"] = "local"
-os.environ["DEFAULT_MODEL"] = "Qwen/Qwen3-235B-A22B"
-os.environ["ADJUDICATOR_MODEL"] = "Qwen/Qwen3-235B-A22B"
+os.environ["DEFAULT_MODEL"] = "Qwen/Qwen3-14B"
+os.environ["ADJUDICATOR_MODEL"] = "Qwen/Qwen3-14B"
+os.environ["MODEL_TIER"] = "colab_a100"
 ```
 
-### 3e. Ollama alternative (not recommended for 235B model)
+### 3e. Ollama alternative (for local testing without vLLM)
 
-The Qwen3-235B-A22B model is too large for Ollama on most setups. If you need a lighter
-alternative for testing without an H100, consider running a smaller model via Ollama:
+For quick local testing without setting up vLLM:
 
 ```bash
 curl -fsSL https://ollama.ai/install.sh | sh
-ollama pull qwen3:32b
+ollama pull qwen3:14b    # or qwen3:8b for less VRAM
 
 export VLLM_BASE_URL=http://localhost:11434/v1
 export ADJUDICATOR_BASE_URL=http://localhost:11434/v1
-export DEFAULT_MODEL=qwen3:32b
-export ADJUDICATOR_MODEL=qwen3:32b
+export DEFAULT_MODEL=qwen3:14b
+export ADJUDICATOR_MODEL=qwen3:14b
 ```
 
-**Note:** Ollama supports structured outputs but has not been fully validated for strict schema-constrained extraction. vLLM with the full 235B MoE model is the recommended setup.
+**Note:** Ollama supports structured outputs but has not been fully validated for strict schema-constrained extraction. vLLM is the recommended setup for production runs.
 
 ---
 
@@ -646,30 +754,50 @@ vllm serve Qwen/Qwen3-235B-A22B --enforce-eager ...
 
 ### Troubleshooting: vLLM out of memory
 
-Qwen3-235B-A22B requires ~60 GB VRAM. If you're running low:
+**On A100 40GB:** Use `Qwen/Qwen3-14B` (not the 235B MoE). The 235B model requires 80GB VRAM.
 
-1. Reduce `--gpu-memory-utilization 0.95` and `--max-model-len 16384`
+```bash
+# Correct for A100 40GB:
+python setup_vllm.py --tier colab_a100 --set-env
+
+# Or manually:
+vllm serve Qwen/Qwen3-14B --max-model-len 16384 --gpu-memory-utilization 0.95 --enforce-eager
+```
+
+**General OOM fixes:**
+1. Reduce `--max-model-len 8192` if 16384 doesn't fit
 2. Ensure no stale GPU processes are running (`nvidia-smi`, then `kill -9 <pid>`)
-3. If using A100 40GB, the model will not fit — use an 80GB GPU
+3. Use `--enforce-eager` to avoid torch.compile memory spikes
+4. T4 (16GB) is too small — Qwen3-8B OOMs on T4. Use A100 40GB minimum
 
 ---
 
 ## Environment Variables
 
-All optional. Sensible defaults are built in.
+All optional. Sensible defaults are built in. Use `MODEL_TIER` for one-line config.
 
 ```bash
+# Model tier (sets all model defaults — easiest option)
+export MODEL_TIER=colab_a100                            # colab_a100 | h100
+
 # LLM endpoints
 export VLLM_BASE_URL=http://localhost:8000/v1          # Default model
 export ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same server (single-model setup)
 export VLLM_API_KEY=local                               # API key
-export DEFAULT_MODEL=Qwen/Qwen3-235B-A22B              # MoE extractor + adjudicator
-export ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B          # Same model
+
+# Model overrides (if not using MODEL_TIER)
+export DEFAULT_MODEL=Qwen/Qwen3-14B                    # Base extractor
+export ADJUDICATOR_MODEL=Qwen/Qwen3-14B               # Adjudicator (can differ)
 
 # Retrieval (auto-detected, override if needed)
 export RETRIEVAL_DEVICE=cpu                             # Force CPU for embeddings
 export RETRIEVAL_FP16=false                             # Disable fp16 (required for CPU)
 ```
 
-The Qwen3-235B-A22B model is powerful enough for both extraction and adjudication.
-No dual-model setup is needed.
+### Tier presets
+
+| Tier | DEFAULT_MODEL | ADJUDICATOR_MODEL | Best for |
+|------|--------------|-------------------|----------|
+| `colab_a100` | Qwen/Qwen3-14B | Qwen/Qwen3-8B | A100 40GB (Colab Pro) |
+| `colab_a100_single` | Qwen/Qwen3-14B | Qwen/Qwen3-14B | A100 40GB (simpler) |
+| `h100` | Qwen/Qwen3-235B-A22B | Qwen/Qwen3-235B-A22B | H100 80GB (best quality) |
