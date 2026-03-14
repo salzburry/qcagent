@@ -325,15 +325,13 @@ class LocalModelClient:
         raw_schema = schema.model_json_schema()
         flat_schema = _flatten_schema(raw_schema)
 
+        # Drop 'required' from flattened schema — all fields have defaults now,
+        # and removing it prevents xgrammar/outlines from fighting the model
+        # over field presence, which is the #1 cause of schema failures.
+        flat_schema.pop("required", None)
+
         # Generate a minimal JSON example so the model sees exact field names
         example_json = _generate_example(schema)
-        augmented_system = (
-            f"{system_prompt}\n\n"
-            f"## REQUIRED OUTPUT FORMAT\n"
-            f"Your response must be a JSON object with EXACTLY these field names.\n"
-            f"Example structure (fill in real values from the protocol):\n"
-            f"```json\n{example_json}\n```"
-        )
 
         # Log flattened schema on first call for diagnostics
         if not hasattr(self, "_logged_schemas"):
@@ -343,8 +341,79 @@ class LocalModelClient:
             self._logged_schemas.add(schema_name)
             logger.info(
                 f"[extract] Schema '{schema_name}' flattened for guided_json "
-                f"({len(json.dumps(flat_schema))} chars, "
-                f"required={flat_schema.get('required', 'MISSING')})"
+                f"({len(json.dumps(flat_schema))} chars)"
+            )
+
+        # ── Two-pass extraction ──────────────────────────────────────────
+        # Pass 1: Unconstrained reasoning — let the model think freely
+        # Pass 2: Schema-constrained normalization — format into JSON
+        # This separates reasoning from formatting (arXiv: "think before
+        # constraining") and dramatically improves accuracy for complex schemas.
+
+        # Pass 1: Free reasoning draft
+        draft_prompt = (
+            f"{system_prompt}\n\n"
+            f"First, analyze the protocol text and list your findings as bullet points. "
+            f"For each finding, include:\n"
+            f"- The exact quoted text from the protocol\n"
+            f"- Which chunk_id it came from\n"
+            f"- Whether it is explicit or inferred\n"
+            f"- Your confidence (0-1)\n"
+            f"- Any contradictions between sections\n\n"
+            f"Be thorough. List ALL relevant findings."
+        )
+
+        try:
+            draft_response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": draft_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=self.config.temperature,
+                max_tokens=tokens,
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+            )
+            draft_text = draft_response.choices[0].message.content or ""
+            # Strip any <think> blocks from draft too
+            draft_text = re.sub(r"<think>.*?</think>\s*", "", draft_text, flags=re.DOTALL).strip()
+            logger.info(
+                f"[extract] Pass 1 draft for {schema_name}: {len(draft_text)} chars"
+            )
+        except Exception as e:
+            logger.warning(f"[extract] Pass 1 draft failed ({e}), proceeding with single-pass")
+            draft_text = ""
+
+        # Pass 2: Schema-constrained normalization
+        normalize_system = (
+            f"Convert the analysis below into a JSON object matching the required schema.\n\n"
+            f"## REQUIRED OUTPUT FORMAT\n"
+            f"Your response must be a JSON object with EXACTLY these field names:\n"
+            f"```json\n{example_json}\n```\n\n"
+            f"Rules:\n"
+            f"- Use ONLY the field names shown above — do not invent new ones.\n"
+            f"- Fill in real values from the analysis and protocol text.\n"
+            f"- If no findings, return empty lists.\n"
+            f"- Respond with valid JSON only, no markdown fences."
+        )
+
+        if draft_text:
+            normalize_user = (
+                f"## ANALYSIS\n{draft_text}\n\n"
+                f"## ORIGINAL PROTOCOL TEXT\n{user_prompt}\n\n"
+                f"Now convert the analysis into the required JSON format."
+            )
+        else:
+            # Fallback to single-pass if draft failed
+            normalize_user = user_prompt
+            normalize_system = (
+                f"{system_prompt}\n\n"
+                f"## REQUIRED OUTPUT FORMAT\n"
+                f"Your response must be a JSON object with EXACTLY these field names.\n"
+                f"Example structure (fill in real values from the protocol):\n"
+                f"```json\n{example_json}\n```"
             )
 
         last_error = None
@@ -353,8 +422,8 @@ class LocalModelClient:
             try:
                 # On retry after validation error, add self-healing context
                 messages = [
-                    {"role": "system", "content": augmented_system},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "system", "content": normalize_system},
+                    {"role": "user", "content": normalize_user},
                 ]
                 if attempt > 0 and last_raw and last_error:
                     messages.append({
@@ -378,6 +447,7 @@ class LocalModelClient:
                     max_tokens=tokens,
                     extra_body={
                         "guided_json": flat_schema,
+                        "chat_template_kwargs": {"enable_thinking": False},
                     },
                 )
 
@@ -385,11 +455,8 @@ class LocalModelClient:
                 raw = choice.message.content
 
                 # Strip <think>...</think> blocks (Qwen3 reasoning traces)
-                think_text = ""
+                # Even with enable_thinking=False, some vLLM versions still emit them
                 if raw and "<think>" in raw:
-                    think_match = re.search(r"<think>(.*?)</think>", raw, flags=re.DOTALL)
-                    if think_match:
-                        think_text = think_match.group(1).strip()
                     raw = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
 
                 if not raw or not raw.strip():
@@ -403,14 +470,14 @@ class LocalModelClient:
                     )
 
                 # Fill missing required fields with type-appropriate defaults
-                # before validation — vLLM/xgrammar doesn't enforce 'required'
+                # before validation — belt-and-suspenders with schema defaults
                 data = json.loads(raw)
                 data = _fill_missing_defaults(data, schema)
                 parsed = schema.model_validate(data)
 
-                # Back-fill chain_of_thought from <think> block if empty
-                if think_text and hasattr(parsed, "chain_of_thought") and not parsed.chain_of_thought:
-                    parsed.chain_of_thought = think_text
+                # Back-fill chain_of_thought from draft if empty
+                if draft_text and hasattr(parsed, "chain_of_thought") and not parsed.chain_of_thought:
+                    parsed.chain_of_thought = draft_text[:2000]
 
                 if attempt > 0:
                     logger.info(

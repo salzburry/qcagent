@@ -89,8 +89,8 @@ class DataPrepExtraction(BaseModel):
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
 
-    important_dates: list[ImportantDateExtraction]
-    time_periods: list[TimePeriodExtraction]
+    important_dates: list[ImportantDateExtraction] = Field(default_factory=list)
+    time_periods: list[TimePeriodExtraction] = Field(default_factory=list)
 
     # Study-level fields
     data_source: Optional[str] = Field(
@@ -104,7 +104,7 @@ class DataPrepExtraction(BaseModel):
         description="retrospective_cohort | prospective_cohort | case_control | cross_sectional | other"
     )
 
-    contradictions_found: bool
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -124,13 +124,13 @@ class StudyPeriodExtraction(BaseModel):
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
 
-    candidates: list[CandidateExtraction]
+    candidates: list[CandidateExtraction] = Field(default_factory=list)
     study_period_start: Optional[str] = None
     study_period_end: Optional[str] = None
     data_source: Optional[str] = None
     data_source_version: Optional[str] = None
     design_type: Optional[str] = None
-    contradictions_found: bool
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -477,8 +477,8 @@ class CensoringRulesExtraction(BaseModel):
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
 
-    rules: list[RuleExtraction]
-    contradictions_found: bool
+    rules: list[RuleExtraction] = Field(default_factory=list)
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 

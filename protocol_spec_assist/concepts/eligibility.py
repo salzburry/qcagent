@@ -43,7 +43,7 @@ class CriterionInventory(BaseModel):
         )
         confidence: float = Field(ge=0.0, le=1.0)
 
-    criteria: list[CriterionStub]
+    criteria: list[CriterionStub] = Field(default_factory=list)
     contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -155,8 +155,8 @@ class InclusionCriteriaExtraction(BaseModel):
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
 
-    criteria: list[CriterionExtraction]
-    contradictions_found: bool
+    criteria: list[CriterionExtraction] = Field(default_factory=list)
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -186,8 +186,8 @@ class ExclusionCriteriaExtraction(BaseModel):
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
 
-    criteria: list[CriterionExtraction]
-    contradictions_found: bool
+    criteria: list[CriterionExtraction] = Field(default_factory=list)
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 

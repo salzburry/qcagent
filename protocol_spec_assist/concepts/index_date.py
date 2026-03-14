@@ -54,9 +54,11 @@ class IndexDateExtraction(BaseModel):
         "Identify key phrases, assess whether they are explicit or inferred, and note any contradictions."
     )
     candidates: list[CandidateExtraction] = Field(
+        default_factory=list,
         description="All candidate index date definitions found, ranked by confidence"
     )
     contradictions_found: bool = Field(
+        default=False,
         description="True if different sections give conflicting index date definitions"
     )
     contradiction_detail: Optional[str] = Field(

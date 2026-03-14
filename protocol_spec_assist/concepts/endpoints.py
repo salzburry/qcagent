@@ -42,8 +42,8 @@ class FollowUpEndExtraction(BaseModel):
         description="Think step by step about the endpoints/follow-up definitions in the protocol text. "
         "Identify key passages, assess specificity, and note any ambiguities before structuring the answer."
     )
-    candidates: list[CandidateExtraction]
-    contradictions_found: bool
+    candidates: list[CandidateExtraction] = Field(default_factory=list)
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -156,8 +156,8 @@ class PrimaryEndpointExtraction(BaseModel):
         description="Think step by step about the endpoints/follow-up definitions in the protocol text. "
         "Identify key passages, assess specificity, and note any ambiguities before structuring the answer."
     )
-    candidates: list[CandidateExtraction]
-    contradictions_found: bool
+    candidates: list[CandidateExtraction] = Field(default_factory=list)
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
