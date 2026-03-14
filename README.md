@@ -11,9 +11,12 @@ No cloud. No external API calls after model download. Complete data control.
 Protocol PDF
     │
     ▼
-[Docling Parser]
-    Preserves: layout, reading order, tables, appendices, footnotes
-    Fallback: PyMuPDF with micro-section merging
+[Multi-Strategy Parser]
+    Strategy 1: Docling (no OCR) — layout, reading order, tables
+    Strategy 2: Docling (with OCR) — for scanned/mixed PDFs
+    Strategy 3: PyMuPDF heading-based — heading detection + section merging
+    Strategy 4: PyMuPDF page-first — one section per page, no heading detection
+    Each strategy quality-scored; best result accepted
     Quality scoring: pass / warn / fail (fail = pipeline stops)
     │
     ▼
@@ -28,13 +31,15 @@ Protocol PDF
     ├── primary_endpoint
     ├── eligibility_inclusion   (two-pass: inventory + detail)
     ├── eligibility_exclusion   (two-pass: inventory + detail)
-    ├── study_period            (DataPrepExtraction schema)
+    ├── study_period            (two-pass: regex mining + LLM classification)
     ├── censoring_rules
     ├── demographics
     ├── clinical_characteristics
     ├── biomarkers
     ├── lab_variables
-    └── treatment_variables
+    ├── treatment_variables
+    ├── cohort_definitions      (Section B: treatment arms, comparators, analysis populations)
+    └── source_data_prep        (Section D: protocol-specific + source-known issues)
     │
     Each finder does the same fixed sequence:
       1. Build query bank (base query + TA pack synonyms)
@@ -50,10 +55,10 @@ Protocol PDF
     │
     ▼
 [Row Writers]  ← Deterministic row-family expansion
-    DemographicsWriter: AGE → AGE, AGEN, AGEGR, AGEGRN
-    DataPrepWriter:     evidence → ImportantDate + TimePeriod rows
-    EndpointWriter:     endpoint → EVENTFL, EVENTDT, TTOEVENT
-    CensoringWriter:    rules → CENS01, CENS01FL, CENS01DT
+    DemographicsWriter: AGE → AGE, AGEN, AGEGR, AGEGRN (provenance-gated)
+    DataPrepWriter:     evidence → ImportantDate + TimePeriod rows ([UNRESOLVED] if missing)
+    EndpointWriter:     sponsor term → OS_EVENTFL, PFS_TTOEVENT (org naming)
+    CensoringWriter:    rules → DEATH_FL, LTFU_DT, DISENRL_REAS (meaningful prefixes)
     │
     ▼
 [QC Engine]  ← Deterministic, no LLM
@@ -113,8 +118,26 @@ Post-review QC validates completeness after human selection. No false warnings.
 **Parse-fail gate.** If PDF parse quality is FAIL, the pipeline stops and produces a
 shell spec with a CRITICAL QC warning instead of feeding garbage into extraction.
 
+**[UNRESOLVED] markers, not plausible fakes.** Placeholder rows use explicit `[UNRESOLVED]` markers
+instead of realistic-sounding default definitions. This prevents reviewers from mistaking
+auto-generated text for extracted protocol language.
+
 **Extracted evidence beats placeholders.** Auto-generated placeholder rows (INIT, INDEX, FUED)
 are always replaced when real extracted evidence is available from concept finders.
+
+**Multi-channel source detection.** Data source is detected via a 4-channel priority cascade:
+explicit override > study_period metadata > protocol title > protocol text sample.
+
+**Two-pass Data Prep extraction.** Pass 1 mines date-like candidates locally via regex.
+Pass 2 sends pre-mined candidates to the LLM for classification — cheaper and more reliable
+than one-shot extraction.
+
+**Sponsor-derived outcome naming.** Endpoint and censoring variable prefixes derive from
+sponsor terms (OS, PFS, MACE, DEATH, LTFU) instead of positional names (EP01, CENS01).
+20+ known abbreviation mappings included.
+
+**Demographics provenance gate.** Static-only demographics packs (no page/confidence provenance)
+are marked as `explicit="inferred"` with `[UNRESOLVED]` notes, preventing false provenance claims.
 
 **Device-aware retrieval.** Embedding and reranker models auto-detect GPU/CPU.
 Override with `RETRIEVAL_DEVICE` and `RETRIEVAL_FP16` env vars for explicit control.
@@ -130,7 +153,7 @@ protocol_spec_assist/
 │
 ├── ingest/
 │   ├── __init__.py
-│   └── parse_protocol.py       # Docling parser + PyMuPDF fallback + quality scoring
+│   └── parse_protocol.py       # Multi-strategy parser (4 strategies, quality-scored)
 │
 ├── retrieval/
 │   ├── __init__.py
@@ -152,12 +175,14 @@ protocol_spec_assist/
 │   ├── index_date.py           # Index date finder
 │   ├── endpoints.py            # follow_up_end + primary_endpoint
 │   ├── eligibility.py          # Two-pass: inventory → per-criterion detail
-│   ├── study_design.py         # DataPrepExtraction (dates + periods) + censoring_rules
+│   ├── study_design.py         # Two-pass DataPrepExtraction (regex mine + LLM classify) + censoring
 │   ├── demographics.py         # Demographics finder (static template + LLM enrichment)
 │   ├── clinical_characteristics.py
 │   ├── biomarkers.py
 │   ├── lab_variables.py
-│   └── treatment_variables.py
+│   ├── treatment_variables.py
+│   ├── cohort_definitions.py   # Section B: treatment arms, comparators, analysis populations
+│   └── source_data_prep.py     # Section D: protocol + source-known data prep issues
 │
 ├── row_completion/
 │   ├── __init__.py
@@ -168,7 +193,7 @@ protocol_spec_assist/
 │
 ├── data_sources/
 │   ├── __init__.py
-│   └── registry.py             # Source-specific definitions (COTA, Flatiron, Optum, etc.)
+│   └── registry.py             # Source-specific definitions + multi-channel detection
 │
 ├── spec_output/
 │   ├── __init__.py
@@ -374,7 +399,7 @@ If Docling fails to install entirely, the pipeline falls back to PyMuPDF automat
 pytest tests/ -v
 ```
 
-You should see **120 passed, 2 skipped**.
+You should see **~160 passed, 2 skipped**.
 
 ### Quick smoke test
 
@@ -659,23 +684,26 @@ python -m protocol_spec_assist.workflows.protocol_run \
 
 ```
 Step 0: Model preflight      — verifies vLLM is reachable
-Step 1: Parse protocol        — Docling/PyMuPDF extracts sections, tables, pages (~30-120s)
-         ├── Quality scoring  — grades parse: pass / warn / fail
-         └── FAIL gate        — if grade=fail, stops here with shell spec + QC warning
+Step 1: Parse protocol        — Multi-strategy pipeline (Docling, Docling+OCR, PyMuPDF heading,
+         │                       PyMuPDF page-first). Best quality score wins (~30-120s)
+         ├── Quality scoring  — grades each strategy: pass / warn / fail
+         └── FAIL gate        — if all strategies fail, stops here with shell spec + QC warning
 Step 2: Index protocol        — BGE-M3 embeds chunks, Qdrant indexes (~20-60s)
-Step 3: Find concepts         — 12 concept finders run sequentially:
+Step 3: Find concepts         — 14 concept finders run sequentially:
         ├── index_date
         ├── follow_up_end
         ├── primary_endpoint
         ├── eligibility_inclusion   (two-pass: inventory → detail)
         ├── eligibility_exclusion   (two-pass: inventory → detail)
-        ├── study_period            (DataPrepExtraction: dates + periods)
+        ├── study_period            (two-pass: regex mining → LLM classification)
         ├── censoring_rules
         ├── demographics
         ├── clinical_characteristics
         ├── biomarkers
         ├── lab_variables
-        └── treatment_variables
+        ├── treatment_variables
+        ├── cohort_definitions      (Section B: arms, comparators, populations)
+        └── source_data_prep        (Section D: protocol + source-known issues)
 Step 4: Pre-review QC         — deterministic rule checks (12 rules)
 Step 5: Save evidence packs   — JSON output
 Step 6: Generate draft spec   — Row writers expand → JSON + HTML + Excel
