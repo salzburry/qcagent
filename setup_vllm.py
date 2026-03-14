@@ -186,6 +186,28 @@ def main():
     max_model_len = args.max_model_len or pick_max_model_len(gpu_name, cap_major)
     print(f"[setup_vllm] Using --max-model-len {max_model_len}")
 
+    # ── Determine canonical model name ──────────────────────────────
+    # When loading from a local path (e.g. /content/drive/MyDrive/.../Qwen--Qwen3-14B),
+    # vLLM advertises that local path as the model ID. The client expects the
+    # canonical HF name (e.g. Qwen/Qwen3-14B). Use --served-model-name to align.
+    canonical_model = args.model
+    served_model_name = None
+    if "/" not in args.model or args.model.startswith("/"):
+        # Looks like a local path, not an HF model ID.
+        # Try to recover the canonical name from the path components.
+        # Common pattern: .../Qwen--Qwen3-14B or .../Qwen/Qwen3-14B
+        parts = Path(args.model).parts
+        if len(parts) >= 2:
+            org, name = parts[-2], parts[-1]
+            # HuggingFace download cache uses "--" as separator
+            if "--" in name:
+                served_model_name = name.replace("--", "/")
+            else:
+                served_model_name = f"{org}/{name}"
+        if served_model_name:
+            canonical_model = served_model_name
+            print(f"[setup_vllm] Local model path detected. Will serve as: {served_model_name}")
+
     # ── Build vLLM command ──────────────────────────────────────────
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
@@ -198,6 +220,8 @@ def main():
         "--gpu-memory-utilization", str(args.gpu_memory_utilization),
         "--enforce-eager",  # skip torch.compile — avoids Dynamo crash in V1 engine
     ]
+    if served_model_name:
+        cmd.extend(["--served-model-name", served_model_name])
     if args.quantization:
         cmd.extend(["--quantization", args.quantization])
 
@@ -243,9 +267,9 @@ def main():
         os.environ["VLLM_BASE_URL"] = base_url
         os.environ["ADJUDICATOR_BASE_URL"] = base_url
         os.environ["VLLM_API_KEY"] = "local"
-        os.environ["DEFAULT_MODEL"] = args.model
-        os.environ["ADJUDICATOR_MODEL"] = args.model
-        print(f"[setup_vllm] Environment variables set (VLLM_BASE_URL={base_url}, model={args.model})")
+        os.environ["DEFAULT_MODEL"] = canonical_model
+        os.environ["ADJUDICATOR_MODEL"] = canonical_model
+        print(f"[setup_vllm] Environment variables set (VLLM_BASE_URL={base_url}, model={canonical_model})")
 
     return proc
 

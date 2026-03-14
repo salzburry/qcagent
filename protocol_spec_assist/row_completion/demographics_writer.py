@@ -161,25 +161,40 @@ class DemographicsWriter(RowWriter):
     def _has_real_evidence(self, pack: EvidencePack) -> bool:
         """Check if the pack contains any candidates with real provenance.
 
-        A candidate counts as real evidence if it has a source page OR
-        an LLM confidence score — indicating it was actually extracted
-        from protocol text, not just populated from static defaults.
+        A candidate counts as real evidence only if it has a source page
+        (indicating it was traced back to a specific protocol page).
+        Static-template candidates have llm_confidence=0.5 but no page —
+        those must NOT be treated as real evidence.
+
+        Also rejects packs built entirely from static templates
+        (model_used="static_template").
         """
+        # Packs built entirely from static templates are never real evidence
+        if getattr(pack, "model_used", None) == "static_template":
+            return False
         if not pack.candidates:
             return False
-        return any(
-            c.page is not None or c.llm_confidence is not None
-            for c in pack.candidates
-        )
+        # Require at least one candidate with an actual source page
+        return any(c.page is not None for c in pack.candidates)
 
     def _detect_mentioned_families(
         self,
         pack: EvidencePack,
         meta: dict,
     ) -> set[str]:
-        """Detect which variable families are mentioned in the evidence text."""
+        """Detect which variable families are mentioned in the evidence text.
+
+        Only scans candidates that have real provenance (a source page).
+        Static-template candidates contain keywords like 'weight', 'height',
+        'smoking' in their snippets by construction, so scanning them would
+        falsely trigger optional families.
+        """
         mentioned = set()
-        all_text = " ".join(c.snippet.lower() for c in pack.candidates)
+        # Only consider candidates with actual page provenance
+        real_snippets = [c.snippet for c in pack.candidates if c.page is not None]
+        if not real_snippets:
+            return mentioned
+        all_text = " ".join(s.lower() for s in real_snippets)
 
         family_keywords = {
             "BMI": ["bmi", "body mass index"],

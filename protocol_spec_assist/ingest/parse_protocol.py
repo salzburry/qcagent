@@ -248,7 +248,10 @@ def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedPr
     4. PyMuPDF page-first — last resort; treats each page as a section, no heading
        detection. Produces fewer, larger sections that avoid junk-heading fragmentation.
 
-    Each strategy is scored. The first to reach "pass" or "warn" is returned.
+    All strategies are evaluated and scored. The best-scoring acceptable result
+    is returned (not the first acceptable one). This ensures that a later
+    strategy with grade "pass" wins over an earlier strategy with grade "warn".
+
     If all strategies produce "fail", the best-scoring result is returned so
     the downstream fail-closed gate in protocol_run can emit a shell spec.
     """
@@ -263,30 +266,27 @@ def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedPr
         grade_map = {"pass": 2.0, "warn": 1.0, "fail": 0.0}
         return grade_map.get(q.grade, 0.0) + (1.0 - q.empty_ratio) * 0.5 + min(q.median_text_len / 200.0, 0.5)
 
-    def _try_strategy(result: ParsedProtocol, label: str) -> bool:
-        """Score a parse result. Returns True if acceptable (pass/warn)."""
+    def _try_strategy(result: ParsedProtocol, label: str) -> None:
+        """Score a parse result and update best if this is the highest-scoring."""
         nonlocal best, best_score
         quality = _quality_score(result)
         result.quality = quality
         sv = _score_value(quality)
-        print(f"[Parser] {label}: {quality}")
+        print(f"[Parser] {label}: {quality} (score={sv:.2f})")
         if sv > best_score:
             best = result
             best_score = sv
-        return quality.grade in ("pass", "warn")
 
     # Strategy 1: Docling (no OCR)
     try:
         result = _parse_with_docling(path, pid, do_ocr=False)
-        if _try_strategy(result, "Docling (no OCR)"):
-            return best
+        _try_strategy(result, "Docling (no OCR)")
 
         # Strategy 2: Docling (with OCR) — recovers scanned/image PDFs
         print("[Parser] Trying Docling with OCR enabled...")
         try:
             result_ocr = _parse_with_docling(path, pid, do_ocr=True)
-            if _try_strategy(result_ocr, "Docling (OCR)"):
-                return best
+            _try_strategy(result_ocr, "Docling (OCR)")
         except Exception as e:
             print(f"[Parser] Docling OCR failed ({type(e).__name__}: {e}), continuing to PyMuPDF.")
 
@@ -300,8 +300,7 @@ def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedPr
     try:
         fallback = _parse_with_pymupdf(path, pid)
         fallback = _merge_micro_sections(fallback)
-        if _try_strategy(fallback, "PyMuPDF heading-based (merged)"):
-            return best
+        _try_strategy(fallback, "PyMuPDF heading-based (merged)")
     except Exception as e:
         print(f"[Parser] PyMuPDF heading-based failed ({type(e).__name__}: {e}).")
 
@@ -309,13 +308,13 @@ def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedPr
     # This avoids the junk-heading problem entirely for difficult PDFs.
     try:
         page_first = _parse_with_pymupdf_page_first(path, pid)
-        if _try_strategy(page_first, "PyMuPDF page-first"):
-            return best
+        _try_strategy(page_first, "PyMuPDF page-first")
     except Exception as e:
         print(f"[Parser] PyMuPDF page-first failed ({type(e).__name__}: {e}).")
 
-    # Return whatever we got (even if "fail" — let downstream gate handle it)
+    # Return the best result across all strategies
     if best is not None:
+        print(f"[Parser] Selected: {best.quality} (score={best_score:.2f})")
         return best
 
     # Absolute fallback: empty protocol
