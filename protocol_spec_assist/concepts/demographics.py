@@ -48,7 +48,7 @@ STATIC_TEMPLATE = [
 class DemographicsExtraction(BaseModel):
     """Schema-constrained LLM output for demographics extraction."""
 
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the demographic variables in the protocol. "
         "Identify which demographics are explicitly mentioned vs implied, "
         "and note any specific definitions or categories given."
@@ -73,7 +73,7 @@ class DemographicsExtraction(BaseModel):
     )
     contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT = """You are an expert RWE protocol analyst specializing in real-world data programming specifications.

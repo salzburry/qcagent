@@ -49,6 +49,7 @@ class IndexDateExtraction(BaseModel):
         confidence: float = Field(ge=0.0, le=1.0)
 
     chain_of_thought: str = Field(
+        default="",
         description="Think step by step about what index date definitions are present in the protocol text. "
         "Identify key phrases, assess whether they are explicit or inferred, and note any contradictions."
     )
@@ -62,7 +63,7 @@ class IndexDateExtraction(BaseModel):
         default=None,
         description="Describe contradictions if found"
     )
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ── System prompt (versioned) ─────────────────────────────────────────────────

@@ -29,7 +29,7 @@ STATIC_TEMPLATE = []
 
 
 class TreatmentVarsExtraction(BaseModel):
-    chain_of_thought: str = Field(description="Think step by step about the treatment variables in the protocol text. Identify which treatment variables are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
+    chain_of_thought: str = Field(default="", description="Think step by step about the treatment variables in the protocol text. Identify which treatment variables are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
 
     class VariableExtraction(BaseModel):
         reasoning: str = ""
@@ -48,7 +48,7 @@ class TreatmentVarsExtraction(BaseModel):
     variables: list[VariableExtraction] = Field(default_factory=list)
     contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT = """You are an expert RWE protocol analyst specializing in programming specifications.

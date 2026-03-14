@@ -38,14 +38,14 @@ class FollowUpEndExtraction(BaseModel):
             description="date_based | event_based | data_cutoff | enrollment_end | composite"
         )
 
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the endpoints/follow-up definitions in the protocol text. "
         "Identify key passages, assess specificity, and note any ambiguities before structuring the answer."
     )
     candidates: list[CandidateExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT_FUE = """You are an expert RWE protocol analyst.
@@ -152,14 +152,14 @@ class PrimaryEndpointExtraction(BaseModel):
         )
         time_to_event: bool = Field(description="True if time-to-event outcome")
 
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the endpoints/follow-up definitions in the protocol text. "
         "Identify key passages, assess specificity, and note any ambiguities before structuring the answer."
     )
     candidates: list[CandidateExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT_PE = """You are an expert RWE protocol analyst.

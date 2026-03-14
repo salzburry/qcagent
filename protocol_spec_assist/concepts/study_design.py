@@ -47,7 +47,7 @@ CONCEPT_SP = "study_period"
 class DataPrepExtraction(BaseModel):
     """Structured extraction targeting real Data Prep tab rows."""
 
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the study design dates and time periods. "
         "Identify date-related phrases, classify them as important dates vs time periods, "
         "and note the data source if mentioned."
@@ -106,12 +106,12 @@ class DataPrepExtraction(BaseModel):
 
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # Legacy schema kept for backward compatibility with existing evidence packs
 class StudyPeriodExtraction(BaseModel):
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the study period and design elements in the protocol."
     )
 
@@ -132,7 +132,7 @@ class StudyPeriodExtraction(BaseModel):
     design_type: Optional[str] = None
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT_DP = """You are an expert RWE protocol analyst building a program specification.
@@ -454,7 +454,7 @@ CONCEPT_CR = "censoring_rules"
 
 
 class CensoringRulesExtraction(BaseModel):
-    chain_of_thought: str = Field(
+    chain_of_thought: str = Field(default="",
         description="Think step by step about the censoring rules in the protocol. "
         "Identify events that end follow-up, distinguish between different censoring reasons, "
         "and note which endpoints each rule applies to."
@@ -480,7 +480,7 @@ class CensoringRulesExtraction(BaseModel):
     rules: list[RuleExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
-    overall_confidence: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SYSTEM_PROMPT_CR = """You are an expert RWE protocol analyst.
