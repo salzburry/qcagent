@@ -135,6 +135,70 @@ def _flatten_schema(schema: dict) -> dict:
     return result
 
 
+def _generate_example(schema: Type[BaseModel]) -> str:
+    """Generate a minimal JSON example from a Pydantic schema.
+
+    This gives the model a concrete reference for exact field names and types,
+    preventing the #1 failure mode: wrong/hallucinated field names.
+    """
+    def _example_value(field_name: str, field_info) -> object:
+        annotation = field_info.annotation
+        if annotation is None:
+            return None
+
+        # Handle Optional (typing.Optional[X] -> X | None)
+        origin = getattr(annotation, "__origin__", None)
+        args = getattr(annotation, "__args__", ())
+
+        # Optional[X] shows as Union[X, None]
+        import typing
+        if origin is typing.Union and type(None) in args:
+            non_none = [a for a in args if a is not type(None)]
+            if non_none:
+                annotation = non_none[0]
+                origin = getattr(annotation, "__origin__", None)
+                args = getattr(annotation, "__args__", ())
+
+        # list[X] -> one example item
+        if origin is list:
+            item_type = args[0] if args else str
+            if isinstance(item_type, type) and issubclass(item_type, BaseModel):
+                return [_example_model(item_type)]
+            elif item_type is str:
+                return ["..."]
+            else:
+                return ["..."]
+
+        # Nested BaseModel
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return _example_model(annotation)
+
+        # Literal
+        if origin is typing.Literal:
+            return args[0] if args else "..."
+
+        # Primitives
+        if annotation is str:
+            return "..."
+        elif annotation is bool:
+            return False
+        elif annotation is float:
+            return 0.0
+        elif annotation is int:
+            return 0
+
+        return "..."
+
+    def _example_model(model: Type[BaseModel]) -> dict:
+        result = {}
+        for fname, finfo in model.model_fields.items():
+            result[fname] = _example_value(fname, finfo)
+        return result
+
+    example = _example_model(schema)
+    return json.dumps(example, indent=2)
+
+
 def _fill_missing_defaults(data: dict, schema: Type[BaseModel]) -> dict:
     """Fill missing required fields with type-appropriate defaults.
 
@@ -261,15 +325,55 @@ class LocalModelClient:
         raw_schema = schema.model_json_schema()
         flat_schema = _flatten_schema(raw_schema)
 
+        # Generate a minimal JSON example so the model sees exact field names
+        example_json = _generate_example(schema)
+        augmented_system = (
+            f"{system_prompt}\n\n"
+            f"## REQUIRED OUTPUT FORMAT\n"
+            f"Your response must be a JSON object with EXACTLY these field names.\n"
+            f"Example structure (fill in real values from the protocol):\n"
+            f"```json\n{example_json}\n```"
+        )
+
+        # Log flattened schema on first call for diagnostics
+        if not hasattr(self, "_logged_schemas"):
+            self._logged_schemas = set()
+        schema_name = schema.__name__
+        if schema_name not in self._logged_schemas:
+            self._logged_schemas.add(schema_name)
+            logger.info(
+                f"[extract] Schema '{schema_name}' flattened for guided_json "
+                f"({len(json.dumps(flat_schema))} chars, "
+                f"required={flat_schema.get('required', 'MISSING')})"
+            )
+
         last_error = None
+        last_raw = None
         for attempt in range(1 + self.config.max_retries):
             try:
+                # On retry after validation error, add self-healing context
+                messages = [
+                    {"role": "system", "content": augmented_system},
+                    {"role": "user", "content": user_prompt},
+                ]
+                if attempt > 0 and last_raw and last_error:
+                    messages.append({
+                        "role": "assistant",
+                        "content": last_raw,
+                    })
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Your JSON had validation errors:\n{last_error}\n\n"
+                            f"Fix the JSON to match the required schema exactly. "
+                            f"Use EXACTLY these top-level fields: "
+                            f"{list(schema.model_fields.keys())}"
+                        ),
+                    })
+
                 response = client.chat.completions.create(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    messages=messages,
                     temperature=self.config.temperature,
                     max_tokens=tokens,
                     extra_body={
@@ -307,6 +411,12 @@ class LocalModelClient:
                 # Back-fill chain_of_thought from <think> block if empty
                 if think_text and hasattr(parsed, "chain_of_thought") and not parsed.chain_of_thought:
                     parsed.chain_of_thought = think_text
+
+                if attempt > 0:
+                    logger.info(
+                        f"[extract] Self-healed on attempt {attempt + 1} for {schema_name}"
+                    )
+
                 return ExtractionResult(
                     parsed=parsed,
                     model_used=model,
@@ -315,8 +425,9 @@ class LocalModelClient:
                 )
 
             except (ValueError, json.JSONDecodeError, ValidationError) as e:
-                # Malformed JSON or empty content — retry
+                # Malformed JSON or validation error — retry with error feedback
                 last_error = e
+                last_raw = locals().get("raw")
                 logger.warning(
                     f"[extract] Attempt {attempt + 1}: parse error: {e}"
                 )
