@@ -160,7 +160,7 @@ def main():
     gpu_name, cap_major = get_gpu_info()
     if gpu_name is None:
         print("[setup_vllm] ERROR: No NVIDIA GPU detected. vLLM requires a CUDA GPU.")
-        print("[setup_vllm] Alternative: use Ollama (see TEST_RUN_GUIDE.md)")
+        print("[setup_vllm] Alternative: use Ollama (see README.md)")
         sys.exit(1)
 
     print(f"[setup_vllm] GPU: {gpu_name} (compute capability {cap_major}.x)")
