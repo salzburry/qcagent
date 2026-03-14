@@ -346,12 +346,31 @@ def _parse_with_docling(path: Path, protocol_id: str, do_ocr: bool = False) -> P
     options.do_ocr = do_ocr
     options.do_table_structure = True   # critical — preserves table structure
 
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=options)
-        }
-    )
-    result = converter.convert(str(path))
+    # Force OCR to use CPU to avoid CUDA OOM when vLLM already occupies the GPU.
+    # RapidOCR (used by Docling) defaults to GPU if available, which crashes
+    # or degrades vLLM inference when both compete for VRAM on A100 40GB.
+    _prev_cuda = None
+    if do_ocr:
+        import os
+        os.environ["RAPIDOCR_DEVICE"] = "cpu"
+        # Also hide CUDA from any other OCR sub-libraries that ignore RAPIDOCR_DEVICE
+        _prev_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+    try:
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=options)
+            }
+        )
+        result = converter.convert(str(path))
+    finally:
+        # Restore CUDA visibility so vLLM inference is not affected
+        if do_ocr:
+            if _prev_cuda is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = _prev_cuda
+            else:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
     doc = result.document
 
     sections = []

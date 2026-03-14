@@ -32,7 +32,7 @@ class ModelConfig(BaseModel):
     max_tokens: int = 4096                                 # headroom for multi-row extractions
                                                           # (eligibility, data prep, censoring)
     max_retries: int = 2                                  # retry on transient failures
-    timeout: float = 120.0                                # seconds
+    timeout: float = 300.0                                # seconds (5 min — 14B model needs headroom)
 
 
 _config: Optional[ModelConfig] = None
