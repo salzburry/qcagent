@@ -262,9 +262,25 @@ def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedPr
     best_score: float = -1.0
 
     def _score_value(q: ParseQuality) -> float:
-        """Numeric score for comparing quality across strategies."""
+        """Numeric score for comparing quality across strategies.
+
+        Components (max ~4.0):
+          - grade:       pass=2.0, warn=1.0, fail=0.0
+          - empty_ratio: up to 0.5 (lower empty ratio = higher score)
+          - text_len:    up to 0.5 (longer median text = higher score)
+          - tables:      up to 1.0 (more tables = higher score, capped at 10)
+
+        Table extraction is heavily weighted because protocol tables contain
+        critical structured data (eligibility criteria, endpoints, visit
+        schedules) that narrative text alone cannot replace.
+        """
         grade_map = {"pass": 2.0, "warn": 1.0, "fail": 0.0}
-        return grade_map.get(q.grade, 0.0) + (1.0 - q.empty_ratio) * 0.5 + min(q.median_text_len / 200.0, 0.5)
+        return (
+            grade_map.get(q.grade, 0.0)
+            + (1.0 - q.empty_ratio) * 0.5
+            + min(q.median_text_len / 200.0, 0.5)
+            + min(q.table_count / 10.0, 1.0)
+        )
 
     def _try_strategy(result: ParsedProtocol, label: str) -> None:
         """Score a parse result and update best if this is the highest-scoring."""
