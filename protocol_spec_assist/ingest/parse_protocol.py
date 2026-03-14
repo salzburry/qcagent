@@ -262,9 +262,25 @@ def parse_protocol(pdf_path: str, protocol_id: Optional[str] = None) -> ParsedPr
     best_score: float = -1.0
 
     def _score_value(q: ParseQuality) -> float:
-        """Numeric score for comparing quality across strategies."""
+        """Numeric score for comparing quality across strategies.
+
+        Components (max ~4.0):
+          - grade:       pass=2.0, warn=1.0, fail=0.0
+          - empty_ratio: up to 0.5 (lower empty ratio = higher score)
+          - text_len:    up to 0.5 (longer median text = higher score)
+          - tables:      up to 1.0 (more tables = higher score, capped at 10)
+
+        Table extraction is heavily weighted because protocol tables contain
+        critical structured data (eligibility criteria, endpoints, visit
+        schedules) that narrative text alone cannot replace.
+        """
         grade_map = {"pass": 2.0, "warn": 1.0, "fail": 0.0}
-        return grade_map.get(q.grade, 0.0) + (1.0 - q.empty_ratio) * 0.5 + min(q.median_text_len / 200.0, 0.5)
+        return (
+            grade_map.get(q.grade, 0.0)
+            + (1.0 - q.empty_ratio) * 0.5
+            + min(q.median_text_len / 200.0, 0.5)
+            + min(q.table_count / 10.0, 1.0)
+        )
 
     def _try_strategy(result: ParsedProtocol, label: str) -> None:
         """Score a parse result and update best if this is the highest-scoring."""
@@ -346,12 +362,31 @@ def _parse_with_docling(path: Path, protocol_id: str, do_ocr: bool = False) -> P
     options.do_ocr = do_ocr
     options.do_table_structure = True   # critical — preserves table structure
 
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=options)
-        }
-    )
-    result = converter.convert(str(path))
+    # Force OCR to use CPU to avoid CUDA OOM when vLLM already occupies the GPU.
+    # RapidOCR (used by Docling) defaults to GPU if available, which crashes
+    # or degrades vLLM inference when both compete for VRAM on A100 40GB.
+    _prev_cuda = None
+    if do_ocr:
+        import os
+        os.environ["RAPIDOCR_DEVICE"] = "cpu"
+        # Also hide CUDA from any other OCR sub-libraries that ignore RAPIDOCR_DEVICE
+        _prev_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+    try:
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=options)
+            }
+        )
+        result = converter.convert(str(path))
+    finally:
+        # Restore CUDA visibility so vLLM inference is not affected
+        if do_ocr:
+            if _prev_cuda is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = _prev_cuda
+            else:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
     doc = result.document
 
     sections = []

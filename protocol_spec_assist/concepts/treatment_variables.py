@@ -29,7 +29,10 @@ STATIC_TEMPLATE = []
 
 
 class TreatmentVarsExtraction(BaseModel):
+    chain_of_thought: str = Field(description="Think step by step about the treatment variables in the protocol text. Identify which treatment variables are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
+
     class VariableExtraction(BaseModel):
+        reasoning: str = ""
         chunk_id: Optional[str] = Field(default=None)
         time_period: str = Field(description="e.g. FU, INDEX, PRE_INT/FU")
         variable_name: str = Field(description="e.g. LOTN, LOT1SD, LOT1ED, LOT1, LOT1NAME, LOT1CAT, CSD")
@@ -41,7 +44,6 @@ class TreatmentVarsExtraction(BaseModel):
         sponsor_term: Optional[str] = None
         explicit: ExplicitType = "explicit"
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str = ""
 
     variables: list[VariableExtraction] = Field(default_factory=list)
     contradictions_found: bool = False
@@ -66,6 +68,9 @@ For each variable provide:
 - values: data type (numeric, date, character)
 - definition: derivation from data tables
 - additional_notes: per-patient vs per-cohort, missing value handling
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing variables.
+Think step by step — identify relevant passages and assess what the protocol explicitly requires.
 
 Rules:
 - Extract ONLY treatment variables that the protocol ACTUALLY DEFINES.

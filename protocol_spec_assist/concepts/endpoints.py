@@ -26,6 +26,7 @@ CONCEPT_FUE = "follow_up_end"
 
 class FollowUpEndExtraction(BaseModel):
     class CandidateExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         summary: Optional[str] = None
@@ -36,8 +37,11 @@ class FollowUpEndExtraction(BaseModel):
         rule_type: str = Field(
             description="date_based | event_based | data_cutoff | enrollment_end | composite"
         )
-        reasoning: str
 
+    chain_of_thought: str = Field(
+        description="Think step by step about the endpoints/follow-up definitions in the protocol text. "
+        "Identify key passages, assess specificity, and note any ambiguities before structuring the answer."
+    )
     candidates: list[CandidateExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
@@ -49,6 +53,9 @@ Extract the follow-up end definition — when observation of a patient stops.
 
 This may be: a fixed date, end of continuous enrollment, death, data cutoff,
 disenrollment, loss to follow-up, or a composite of multiple rules.
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE filling in candidates.
+Think step by step — identify relevant passages, assess their specificity, and consider alternative interpretations.
 
 Rules:
 - Identify ALL follow-up end conditions — there are often multiple.
@@ -130,6 +137,7 @@ CONCEPT_PE = "primary_endpoint"
 
 class PrimaryEndpointExtraction(BaseModel):
     class CandidateExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         summary: Optional[str] = None
@@ -143,8 +151,11 @@ class PrimaryEndpointExtraction(BaseModel):
             description="Component events if composite (e.g. ['CV death', 'MI', 'stroke'])"
         )
         time_to_event: bool = Field(description="True if time-to-event outcome")
-        reasoning: str
 
+    chain_of_thought: str = Field(
+        description="Think step by step about the endpoints/follow-up definitions in the protocol text. "
+        "Identify key passages, assess specificity, and note any ambiguities before structuring the answer."
+    )
     candidates: list[CandidateExtraction]
     contradictions_found: bool
     contradiction_detail: Optional[str] = None
@@ -157,6 +168,9 @@ Extract the primary endpoint definition from protocol text.
 Look for: primary outcome, primary objective, main endpoint, key endpoint.
 For composite endpoints, list all component events.
 For time-to-event endpoints, note the event definition and time-zero.
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE filling in candidates.
+Think step by step — identify relevant passages, assess their specificity, and consider alternative interpretations.
 
 Rules:
 - Distinguish primary from secondary endpoints explicitly.

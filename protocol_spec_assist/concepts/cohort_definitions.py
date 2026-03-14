@@ -29,7 +29,13 @@ PROMPT_VERSION = "0.5.0"
 class CohortDefinitionExtraction(BaseModel):
     """Schema for cohort definition extraction."""
 
+    chain_of_thought: str = Field(
+        description="Think step by step about cohort definitions in the protocol. "
+        "Identify treatment arms, comparator groups, and analysis populations before structuring."
+    )
+
     class CohortExtraction(BaseModel):
+        reasoning: str = Field(description="Why this cohort definition is relevant and how it was identified")
         chunk_id: Optional[str] = None
         quoted_text: str = Field(description="Exact quoted text from the protocol")
         cohort_label: str = Field(
@@ -48,7 +54,6 @@ class CohortDefinitionExtraction(BaseModel):
         section_title: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
 
     cohorts: list[CohortExtraction]
     contradictions_found: bool
@@ -76,6 +81,9 @@ eligibility is applied.
 - cohort_variable: Variable name (e.g. "COHORT", "TRTGRP", "EXPOSURE")
 - values: Coded values (e.g. "1=Drug A, 2=Drug B")
 - definition: Operational definition with codes, procedures, or algorithm details
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing cohorts.
+Think step by step — identify treatment arms, comparators, and analysis populations.
 
 Rules:
 - Extract EVERY distinct cohort or analysis population.

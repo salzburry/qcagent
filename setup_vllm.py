@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 
 def get_gpu_info():
@@ -219,6 +220,7 @@ def main():
         "--dtype", "auto",
         "--gpu-memory-utilization", str(args.gpu_memory_utilization),
         "--enforce-eager",  # skip torch.compile — avoids Dynamo crash in V1 engine
+        "--guided-decoding-backend", "outlines",  # better JSON schema coverage than xgrammar
     ]
     if served_model_name:
         cmd.extend(["--served-model-name", served_model_name])

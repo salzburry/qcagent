@@ -29,7 +29,10 @@ STATIC_TEMPLATE = []
 
 
 class BiomarkersExtraction(BaseModel):
+    chain_of_thought: str = Field(description="Think step by step about the biomarkers in the protocol text. Identify which biomarkers are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
+
     class VariableExtraction(BaseModel):
+        reasoning: str = ""
         chunk_id: Optional[str] = Field(default=None)
         time_period: str = Field(description="e.g. PRE_BIO, PRE_INT, ASSESS_BIO")
         variable_name: str = Field(description="e.g. BCL2, BCL2N, BCL2COT, BCL2C, CD10, MYC")
@@ -41,7 +44,6 @@ class BiomarkersExtraction(BaseModel):
         sponsor_term: Optional[str] = None
         explicit: ExplicitType = "explicit"
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str = ""
 
     variables: list[VariableExtraction] = Field(default_factory=list)
     contradictions_found: bool = False
@@ -62,6 +64,9 @@ For each biomarker variable, there are often related sub-variables:
 4. Value variable — Quantitative result if applicable
 
 Provide the derivation logic for each variable.
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing variables.
+Think step by step — identify relevant passages and assess what the protocol explicitly requires.
 
 Rules:
 - Extract ONLY biomarker variables that the protocol ACTUALLY DEFINES.

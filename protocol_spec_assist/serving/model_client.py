@@ -8,6 +8,7 @@ Override with DEFAULT_MODEL / ADJUDICATOR_MODEL env vars.
 """
 
 from __future__ import annotations
+import copy
 import os
 import json
 import time
@@ -32,7 +33,7 @@ class ModelConfig(BaseModel):
     max_tokens: int = 4096                                 # headroom for multi-row extractions
                                                           # (eligibility, data prep, censoring)
     max_retries: int = 2                                  # retry on transient failures
-    timeout: float = 120.0                                # seconds
+    timeout: float = 300.0                                # seconds (5 min — 14B model needs headroom)
 
 
 _config: Optional[ModelConfig] = None
@@ -55,6 +56,82 @@ def get_config() -> ModelConfig:
             f"adj={_config.adjudicator_model}"
         )
     return _config
+
+
+# ── Schema flattening for vLLM compatibility ─────────────────────────────────
+
+def _flatten_schema(schema: dict) -> dict:
+    """Flatten a Pydantic JSON schema for vLLM/xgrammar compatibility.
+
+    vLLM's xgrammar backend silently mishandles schemas that use:
+      - $ref / $defs (nested type references)
+      - anyOf (from Optional fields)
+
+    This inlines all $ref references and converts anyOf[type, null]
+    to just the type (xgrammar doesn't support nullable unions).
+
+    The result is a self-contained schema with no $ref, $defs, or anyOf,
+    which xgrammar can constrain correctly.
+    """
+    schema = copy.deepcopy(schema)
+    defs = schema.pop("$defs", {})
+
+    def _resolve(node):
+        """Recursively resolve $ref and simplify anyOf."""
+        if not isinstance(node, dict):
+            return node
+
+        # Resolve $ref by inlining the definition
+        if "$ref" in node:
+            ref_path = node["$ref"]  # e.g. "#/$defs/CandidateExtraction"
+            ref_name = ref_path.split("/")[-1]
+            if ref_name in defs:
+                resolved = copy.deepcopy(defs[ref_name])
+                # Merge any extra keys (like "description") from the ref site
+                for k, v in node.items():
+                    if k != "$ref":
+                        resolved.setdefault(k, v)
+                return _resolve(resolved)
+            return node
+
+        # Simplify anyOf[{type: X}, {type: null}] → {type: X}
+        # This is Pydantic's encoding of Optional[X] — xgrammar can't handle it
+        if "anyOf" in node:
+            variants = node["anyOf"]
+            non_null = [v for v in variants if v != {"type": "null"}]
+            if len(non_null) == 1:
+                # Optional[X] → just X (drop the null variant)
+                simplified = copy.deepcopy(non_null[0])
+                for k, v in node.items():
+                    if k != "anyOf":
+                        simplified.setdefault(k, v)
+                return _resolve(simplified)
+            # Multi-type union — flatten each variant
+            node["anyOf"] = [_resolve(v) for v in variants]
+            return node
+
+        # Recurse into properties
+        if "properties" in node:
+            node["properties"] = {
+                k: _resolve(v) for k, v in node["properties"].items()
+            }
+
+        # Recurse into array items
+        if "items" in node:
+            node["items"] = _resolve(node["items"])
+
+        # Recurse into additionalProperties
+        if "additionalProperties" in node and isinstance(node["additionalProperties"], dict):
+            node["additionalProperties"] = _resolve(node["additionalProperties"])
+
+        return node
+
+    result = _resolve(schema)
+
+    # Clean up: remove leftover $defs if any
+    result.pop("$defs", None)
+
+    return result
 
 
 # ── Extraction result with raw response ──────────────────────────────────────
@@ -136,12 +213,22 @@ class LocalModelClient:
         Returns ExtractionResult with parsed object, model_used, and raw response.
         Retries on transient failures. Raises on persistent failure.
 
+        Schema handling:
+            Pydantic schemas are flattened to remove $ref/$defs/anyOf before
+            sending to vLLM. This is required because vLLM's xgrammar backend
+            silently mishandles these features, producing empty/garbage output
+            instead of raising an error.
+
         Args:
             max_tokens: Per-call override. Falls back to config default if None.
         """
         client = self._get_client(use_adjudicator=use_adjudicator)
         model = self.config.adjudicator_model if use_adjudicator else self.config.default_model
         tokens = max_tokens or self.config.max_tokens
+
+        # Flatten schema for vLLM/xgrammar compatibility
+        raw_schema = schema.model_json_schema()
+        flat_schema = _flatten_schema(raw_schema)
 
         last_error = None
         for attempt in range(1 + self.config.max_retries):
@@ -154,13 +241,8 @@ class LocalModelClient:
                     ],
                     temperature=self.config.temperature,
                     max_tokens=tokens,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": schema.__name__,
-                            "schema": schema.model_json_schema(),
-                            "strict": True,
-                        },
+                    extra_body={
+                        "guided_json": flat_schema,
                     },
                 )
 
@@ -229,4 +311,3 @@ class LocalModelClient:
             max_tokens=1024,
         )
         return response.choices[0].message.content
-

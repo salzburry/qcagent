@@ -48,7 +48,14 @@ STATIC_TEMPLATE = [
 class DemographicsExtraction(BaseModel):
     """Schema-constrained LLM output for demographics extraction."""
 
+    chain_of_thought: str = Field(
+        description="Think step by step about the demographic variables in the protocol. "
+        "Identify which demographics are explicitly mentioned vs implied, "
+        "and note any specific definitions or categories given."
+    )
+
     class VariableExtraction(BaseModel):
+        reasoning: str = Field(description="Why this variable was identified")
         chunk_id: Optional[str] = Field(default=None, description="chunk_id from input chunk")
         time_period: str = Field(description="Time period this variable applies to, e.g. STUDY_PD, PRE_INT, FU")
         variable_name: str = Field(description="Short variable name, e.g. AGE, SEX, RACE, BMI")
@@ -60,7 +67,6 @@ class DemographicsExtraction(BaseModel):
         sponsor_term: Optional[str] = Field(default=None, description="Term used in the protocol")
         explicit: ExplicitType = Field(description="Whether explicitly stated or inferred")
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str = Field(description="Why this variable was identified")
 
     variables: list[VariableExtraction] = Field(
         description="All demographic variables found in protocol, each as a row definition"
@@ -92,6 +98,9 @@ For each variable, provide:
 - definition: how to derive from data source (e.g. 'patient/age_at_diagnosis', 'patient/sex')
 - code_lists_group: N/A if not applicable
 - additional_notes: any caveats (censoring rules, single value across cohorts, etc.)
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing variables.
+Think step by step — identify which demographic variables the protocol explicitly requires or implies.
 
 Rules:
 - Extract ONLY variables that the protocol defines or clearly requires.
