@@ -109,6 +109,21 @@ Oncology and CV packs included. Add more as needed.
 **Single model.** Qwen3-14B on A100 40GB via vLLM. Same model handles both
 extraction and adjudication — no separate server needed.
 
+**Schema flattening for vLLM.** Pydantic generates JSON schemas with `$ref`, `$defs`,
+and `anyOf` (for Optional fields). vLLM's xgrammar backend silently mishandles these,
+producing empty/garbage output instead of raising errors. `_flatten_schema()` inlines
+all references and simplifies nullable unions before sending to vLLM via `guided_json`.
+
+**Chain-of-thought before constraints.** All extraction schemas place a `chain_of_thought`
+field as the FIRST field, and `reasoning` as the first field in nested sub-models.
+This follows the "Think Before Constraining" approach (arXiv:2601.07525) — letting the
+model reason freely before committing to structured fields improves accuracy by up to 27%
+on constrained decoding tasks with smaller models.
+
+**Outlines guided decoding.** vLLM is configured with `--guided-decoding-backend outlines`
+instead of the default xgrammar. Outlines has broader JSON schema coverage per JSONSchemaBench
+benchmarks and handles complex schemas more reliably.
+
 **Model-agnostic client.** LocalModelClient uses OpenAI-compatible interface.
 Swap to GPT-4o = change env vars, zero code changes.
 
@@ -546,6 +561,7 @@ python setup_vllm.py --set-env
 - Checks free GPU memory before launching
 - Applies T4/sm_75 flashinfer workaround
 - Uses `--enforce-eager` and `VLLM_USE_V1=0` to avoid V1 engine core crashes
+- Uses `--guided-decoding-backend outlines` for reliable JSON schema constrained decoding
 - Adds `--served-model-name` when loading from a local path (ensures client model ID matches)
 - Dumps last 80 lines of stderr on failure for diagnosis
 
@@ -566,7 +582,8 @@ vllm serve Qwen/Qwen3-14B \
     --enable-prefix-caching \
     --dtype auto \
     --gpu-memory-utilization 0.95 \
-    --enforce-eager
+    --enforce-eager \
+    --guided-decoding-backend outlines
 ```
 
 **In a Colab notebook** (background process):
@@ -584,6 +601,7 @@ vllm_proc = subprocess.Popen(
         "--dtype", "auto",
         "--gpu-memory-utilization", "0.95",
         "--enforce-eager",
+        "--guided-decoding-backend", "outlines",
     ],
     stdout=open("vllm_stdout.log", "w"),
     stderr=open("vllm_stderr.log", "w"),
@@ -799,6 +817,7 @@ Each concept has ranked candidates with:
 | Empty text from parsed PDF | Your PDF is scanned. OCR it first (Step 4) |
 | Parse quality is FAIL | Pipeline stops and generates shell spec. Provide a cleaner PDF or OCR first |
 | `No evidence candidates found` | Expected for some concepts. Check QC output |
+| All extractions return 0 candidates / low confidence | Schema issue — vLLM's xgrammar mishandles `$ref`/`anyOf`. Use `--guided-decoding-backend outlines` or ensure `setup_vllm.py` is used |
 | Adjudicator unavailable warning | Safe to ignore. Both endpoints point to same model |
 
 ### vLLM crashes on T4 (flashinfer)
