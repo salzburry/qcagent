@@ -32,7 +32,11 @@ class RetrievedChunk:
 
 def _detect_device_and_fp16() -> tuple[str, bool]:
     """Detect whether CUDA is available and set fp16 accordingly.
-    Respects RETRIEVAL_DEVICE and RETRIEVAL_FP16 env vars if set."""
+
+    Defaults to CPU on single-GPU machines so retrieval models don't
+    compete with vLLM for VRAM.
+    Override with RETRIEVAL_DEVICE=cuda if you have a dedicated retrieval GPU.
+    """
     import os
 
     device_override = os.environ.get("RETRIEVAL_DEVICE", "").lower()
@@ -43,7 +47,13 @@ def _detect_device_and_fp16() -> tuple[str, bool]:
     else:
         try:
             import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if torch.cuda.is_available():
+                # If only 1 GPU, default to CPU to leave VRAM for vLLM.
+                # With 2+ GPUs, retrieval can safely use GPU.
+                gpu_count = torch.cuda.device_count()
+                device = "cuda" if gpu_count > 1 else "cpu"
+            else:
+                device = "cpu"
         except ImportError:
             device = "cpu"
 
