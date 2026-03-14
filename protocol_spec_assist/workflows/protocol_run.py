@@ -11,11 +11,13 @@ from typing import Optional
 
 try:
     from prefect import flow, task, get_run_logger
+    from prefect.cache_policies import NONE as NO_CACHE
     from prefect.states import Paused
     PREFECT_AVAILABLE = True
 except ImportError:
     # Graceful fallback if Prefect not installed
     PREFECT_AVAILABLE = False
+    NO_CACHE = None
     def flow(fn=None, **kwargs):
         return fn if fn else lambda f: f
     def task(fn=None, **kwargs):
@@ -97,62 +99,62 @@ def _run_concept_finder(
     return pack.model_dump()
 
 
-@task(name="find-index-date")
+@task(name="find-index-date", cache_policy=NO_CACHE)
 def task_find_index_date(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_index_date, pid, index, client, ta_pack)
 
 
-@task(name="find-follow-up-end")
+@task(name="find-follow-up-end", cache_policy=NO_CACHE)
 def task_find_follow_up_end(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_follow_up_end, pid, index, client, ta_pack)
 
 
-@task(name="find-primary-endpoint")
+@task(name="find-primary-endpoint", cache_policy=NO_CACHE)
 def task_find_primary_endpoint(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_primary_endpoint, pid, index, client, ta_pack)
 
 
-@task(name="find-inclusion-criteria")
+@task(name="find-inclusion-criteria", cache_policy=NO_CACHE)
 def task_find_inclusion_criteria(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_inclusion_criteria, pid, index, client, ta_pack)
 
 
-@task(name="find-exclusion-criteria")
+@task(name="find-exclusion-criteria", cache_policy=NO_CACHE)
 def task_find_exclusion_criteria(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_exclusion_criteria, pid, index, client, ta_pack)
 
 
-@task(name="find-study-period")
+@task(name="find-study-period", cache_policy=NO_CACHE)
 def task_find_study_period(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_study_period, pid, index, client, ta_pack)
 
 
-@task(name="find-censoring-rules")
+@task(name="find-censoring-rules", cache_policy=NO_CACHE)
 def task_find_censoring_rules(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_censoring_rules, pid, index, client, ta_pack)
 
 
-@task(name="find-demographics")
+@task(name="find-demographics", cache_policy=NO_CACHE)
 def task_find_demographics(pid, index, client, ta_pack, data_source="generic") -> dict:
     return _run_concept_finder(find_demographics, pid, index, client, ta_pack, data_source=data_source)
 
 
-@task(name="find-clinical-characteristics")
+@task(name="find-clinical-characteristics", cache_policy=NO_CACHE)
 def task_find_clinical_characteristics(pid, index, client, ta_pack, data_source="generic") -> dict:
     return _run_concept_finder(find_clinical_characteristics, pid, index, client, ta_pack, data_source=data_source)
 
 
-@task(name="find-biomarkers")
+@task(name="find-biomarkers", cache_policy=NO_CACHE)
 def task_find_biomarkers(pid, index, client, ta_pack, data_source="generic") -> dict:
     return _run_concept_finder(find_biomarkers, pid, index, client, ta_pack, data_source=data_source)
 
 
-@task(name="find-lab-variables")
+@task(name="find-lab-variables", cache_policy=NO_CACHE)
 def task_find_lab_variables(pid, index, client, ta_pack, data_source="generic") -> dict:
     return _run_concept_finder(find_lab_variables, pid, index, client, ta_pack, data_source=data_source)
 
 
-@task(name="find-treatment-variables")
+@task(name="find-treatment-variables", cache_policy=NO_CACHE)
 def task_find_treatment_variables(pid, index, client, ta_pack, data_source="generic") -> dict:
     return _run_concept_finder(find_treatment_variables, pid, index, client, ta_pack, data_source=data_source)
 

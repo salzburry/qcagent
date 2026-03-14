@@ -20,11 +20,11 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
+from .base import build_context, compute_low_signal, try_adjudicator
 
 CONCEPT = "index_date"
 FINDER_VERSION = "0.3.0"
 PROMPT_VERSION = "0.3.0"
-CONFIDENCE_THRESHOLD = 0.65     # below this → adjudicator pass
 
 
 # ── LLM output schema for this concept ───────────────────────────────────────
@@ -81,31 +81,6 @@ Rules:
 - Respond ONLY with valid JSON matching the schema exactly."""
 
 
-def _build_user_prompt(
-    chunks: list[RetrievedChunk],
-    ta_warning: Optional[str],
-    protocol_id: str,
-) -> str:
-    context_parts = []
-    for i, chunk in enumerate(chunks, 1):
-        context_parts.append(
-            f"[chunk_id={chunk.chunk_id} | Section: {chunk.heading} | "
-            f"Type: {chunk.source_type} | Page: {chunk.page} | "
-            f"Score: {chunk.score:.2f}]\n{chunk.text}"
-        )
-    context = "\n\n---\n\n".join(context_parts)
-
-    warning_block = ""
-    if ta_warning:
-        warning_block = f"\nTA PACK WARNING: {ta_warning}\n"
-
-    return f"""Protocol ID: {protocol_id}
-{warning_block}
-Extract the index date definition from the following protocol text chunks.
-
-{context}"""
-
-
 # ── Main finder function ──────────────────────────────────────────────────────
 
 def find_index_date(
@@ -153,7 +128,7 @@ def find_index_date(
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT)
 
     # Step 4: LLM extraction (schema-constrained)
-    user_prompt = _build_user_prompt(chunks, ta_warning, protocol_id)
+    user_prompt = build_context(chunks, ta_warning, protocol_id)
 
     result = client.extract(
         system_prompt=SYSTEM_PROMPT,
@@ -165,22 +140,12 @@ def find_index_date(
     extraction, model_used = result.parsed, result.model_used
 
     # Step 5: Confidence router — adjudicator pass if needed
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        print(f"[IndexDateFinder] Low confidence ({extraction.overall_confidence:.2f}) "
-              f"or contradictions — attempting adjudicator pass.")
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                schema=IndexDateExtraction,
-                use_adjudicator=True,
-                prompt_version=PROMPT_VERSION,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[IndexDateFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+    adj_extraction, adj_model, used_adjudicator = try_adjudicator(
+        client, SYSTEM_PROMPT, user_prompt, IndexDateExtraction,
+        extraction, PROMPT_VERSION, "IndexDateFinder",
+    )
+    if used_adjudicator:
+        extraction, model_used = adj_extraction, adj_model
 
     # Step 6: Build EvidencePack from extraction
     # Build chunk lookup by chunk_id for deterministic provenance
@@ -218,10 +183,7 @@ def find_index_date(
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
-        low_retrieval_signal=(
-            len(chunks) < 3
-            or (chunks[0].rerank_score is not None and chunks[0].rerank_score < 0.2)
-        ),
+        low_retrieval_signal=compute_low_signal(chunks),
         adjudicator_used=used_adjudicator,
         requires_human_selection=True,
         finder_version=FINDER_VERSION,

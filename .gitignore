@@ -2,3 +2,34 @@ __pycache__/
 *.pyc
 .pytest_cache/
 protocol_spec_assist.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local environment
+.venv/
+venv/
+.env
+.env.local
+
+# Data artifacts (keep .gitkeep placeholders)
+data/outputs/*
+data/index/*
+!data/outputs/.gitkeep
+!data/index/.gitkeep
+
+# Build
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/

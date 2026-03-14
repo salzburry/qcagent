@@ -203,22 +203,6 @@ class ProgramSpec(BaseModel):
     unmapped_variables: list[VariableRow] = Field(default_factory=list)
 
 
-# ── Legacy compat aliases (kept so existing imports don't break) ───────────
-
-class SpecEntry(BaseModel):
-    """A single spec entry with value, provenance, and confidence."""
-    value: str = ""
-    source_snippet: str = ""
-    page: Optional[int] = None
-    confidence: Optional[float] = None
-    explicit: str = "explicit"
-    notes: str = ""
-
-
-CriterionEntry = CriterionRow   # alias for backwards compat
-CensoringRuleEntry = VariableRow  # alias — censoring now lives in Outcomes tab
-
-
 # ── Builder helpers ────────────────────────────────────────────────────────
 
 def _get_governing_text(pack: EvidencePack) -> str | None:
@@ -434,6 +418,8 @@ def build_program_spec(
 
     # ── Variable tabs (5B–6): clinical chars, biomarkers, labs, treatment ──
     # These still use the direct candidate-to-row mapping (no row-family expansion yet)
+    # PROVENANCE GATE: rows marked "inferred" with no source page are excluded.
+    # A smaller spec with blanks is better than a full spec with hallucinations.
     _VARIABLE_TAB_CONCEPTS = {
         "clinical_characteristics": "clinical_characteristics",
         "biomarkers": "biomarkers",
@@ -447,7 +433,13 @@ def build_program_spec(
         meta = (var_pack.concept_metadata or {}).get("per_candidate", {})
         candidates = var_pack.selected_candidates if var_pack.selected_candidates is not None else var_pack.candidates
         target_list = getattr(spec, spec_field)
+        n_skipped = 0
         for cand in candidates:
+            # Skip rows with no provenance — inferred rows without a source
+            # page are likely template defaults, not protocol evidence
+            if cand.page is None and cand.explicit == "inferred":
+                n_skipped += 1
+                continue
             cm = meta.get(cand.candidate_id, {})
             target_list.append(VariableRow(
                 time_period=cm.get("time_period", ""),
@@ -461,6 +453,10 @@ def build_program_spec(
                 confidence=cand.llm_confidence,
                 explicit=cand.explicit,
             ))
+        if n_skipped > 0:
+            spec.qc_warnings.append(
+                f"{concept_key}: {n_skipped} inferred rows without provenance were excluded"
+            )
 
     # ── Unmapped variables: LLM-found variables not in any static template ──
     all_variable_concepts = {"demographics"} | set(_VARIABLE_TAB_CONCEPTS.keys())
