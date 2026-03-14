@@ -24,6 +24,7 @@ Strategy: Do all setup/download on FREE CPU runtime. Switch to A100 only for inf
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 
@@ -34,6 +35,7 @@ DRIVE_MOUNT = "/content/drive"
 DRIVE_ROOT = "/content/drive/MyDrive"
 DRIVE_MODELS = "/content/drive/MyDrive/qcagent_models"
 DRIVE_OUTPUTS = "/content/drive/MyDrive/qcagent_outputs"
+DRIVE_HF_CACHE = "/content/drive/MyDrive/qcagent_models/.hf_cache"
 
 # ── Model definitions ────────────────────────────────────────────────────────
 
@@ -145,19 +147,40 @@ def download_models():
         print("[colab_setup] They will persist across Colab sessions.")
 
 
-def symlink_hf_cache():
-    """Create symlink so HuggingFace cache points to Drive models."""
-    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
-    if os.path.islink(hf_cache) or os.path.isdir(hf_cache):
-        return  # already set up
+def redirect_hf_cache_to_drive():
+    """Redirect ALL HuggingFace downloads to Google Drive.
 
+    Sets HF_HOME and HF_HUB_CACHE env vars so that huggingface_hub writes
+    its blob cache to Drive instead of the VM disk at ~/.cache/huggingface/.
+    Also replaces any existing VM-disk cache dir with a symlink to Drive.
+    """
+    os.makedirs(DRIVE_HF_CACHE, exist_ok=True)
+
+    # 1. Set env vars — this is the primary mechanism.
+    #    huggingface_hub respects these before touching ~/.cache.
+    os.environ["HF_HOME"] = DRIVE_HF_CACHE
+    os.environ["HF_HUB_CACHE"] = os.path.join(DRIVE_HF_CACHE, "hub")
+    os.makedirs(os.environ["HF_HUB_CACHE"], exist_ok=True)
+    print(f"[colab_setup] HF_HOME → {DRIVE_HF_CACHE}  (all downloads go to Drive)")
+
+    # 2. Replace existing VM-disk cache with a symlink (belt-and-suspenders).
+    hf_cache = os.path.expanduser("~/.cache/huggingface")
+    if os.path.islink(hf_cache):
+        return  # already a symlink — nothing to do
+    if os.path.isdir(hf_cache):
+        # Move any existing cached files to Drive so nothing is lost
+        for item in os.listdir(hf_cache):
+            src = os.path.join(hf_cache, item)
+            dst = os.path.join(DRIVE_HF_CACHE, item)
+            if not os.path.exists(dst):
+                shutil.move(src, dst)
+        shutil.rmtree(hf_cache)
     os.makedirs(os.path.dirname(hf_cache), exist_ok=True)
-    os.makedirs(DRIVE_MODELS, exist_ok=True)
     try:
-        os.symlink(DRIVE_MODELS, hf_cache)
-        print(f"[colab_setup] HF cache symlinked: {hf_cache} → {DRIVE_MODELS}")
+        os.symlink(DRIVE_HF_CACHE, hf_cache)
+        print(f"[colab_setup] Symlinked: {hf_cache} → {DRIVE_HF_CACHE}")
     except OSError:
-        print("[colab_setup] Could not symlink HF cache. Models will use Drive path directly.")
+        pass  # env vars will handle it
 
 
 def print_budget_info():
@@ -236,10 +259,10 @@ def main():
     # 1. Mount Drive
     drive_ok = mount_drive()
 
-    # 2. Create directories
+    # 2. Create directories and redirect HF cache to Drive
     if drive_ok:
         setup_directories()
-        symlink_hf_cache()
+        redirect_hf_cache_to_drive()
 
     # 3. Download models (if requested)
     if args.download_models:
