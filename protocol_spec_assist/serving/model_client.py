@@ -16,7 +16,7 @@ import time
 import logging
 from typing import Optional, Type, TypeVar
 from dataclasses import dataclass, field
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -133,6 +133,36 @@ def _flatten_schema(schema: dict) -> dict:
     result.pop("$defs", None)
 
     return result
+
+
+def _fill_missing_defaults(data: dict, schema: Type[BaseModel]) -> dict:
+    """Fill missing required fields with type-appropriate defaults.
+
+    vLLM's xgrammar backend doesn't enforce 'required' fields in JSON schemas,
+    so the model may omit them. Rather than adding explicit defaults to every
+    field in every schema, we infer safe defaults from the field types:
+        str -> "", bool -> False, float/int -> 0, list -> [], Optional -> None
+    """
+    for field_name, field_info in schema.model_fields.items():
+        if field_name in data:
+            continue
+        # Has an explicit default — Pydantic will handle it
+        if field_info.default is not None:
+            continue
+        # Infer default from annotation
+        annotation = field_info.annotation
+        if annotation is str:
+            data[field_name] = ""
+        elif annotation is bool:
+            data[field_name] = False
+        elif annotation is float:
+            data[field_name] = 0.0
+        elif annotation is int:
+            data[field_name] = 0
+        elif hasattr(annotation, "__origin__") and annotation.__origin__ is list:
+            data[field_name] = []
+        # Otherwise leave it for Pydantic to error on (truly unknown type)
+    return data
 
 
 # ── Extraction result with raw response ──────────────────────────────────────
@@ -268,7 +298,11 @@ class LocalModelClient:
                         f"{len(raw)} chars). Increase max_tokens."
                     )
 
-                parsed = schema.model_validate_json(raw)
+                # Fill missing required fields with type-appropriate defaults
+                # before validation — vLLM/xgrammar doesn't enforce 'required'
+                data = json.loads(raw)
+                data = _fill_missing_defaults(data, schema)
+                parsed = schema.model_validate(data)
 
                 # Back-fill chain_of_thought from <think> block if empty
                 if think_text and hasattr(parsed, "chain_of_thought") and not parsed.chain_of_thought:
@@ -280,7 +314,7 @@ class LocalModelClient:
                     prompt_version=prompt_version,
                 )
 
-            except (ValueError, json.JSONDecodeError) as e:
+            except (ValueError, json.JSONDecodeError, ValidationError) as e:
                 # Malformed JSON or empty content — retry
                 last_error = e
                 logger.warning(
