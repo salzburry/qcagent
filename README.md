@@ -13,7 +13,8 @@ Protocol PDF
     ▼
 [Docling Parser]
     Preserves: layout, reading order, tables, appendices, footnotes
-    Fallback: PyMuPDF for simple parsing
+    Fallback: PyMuPDF with micro-section merging
+    Quality scoring: pass / warn / fail (fail = pipeline stops)
     │
     ▼
 [BGE-M3 + Qdrant Hybrid Index]
@@ -22,16 +23,18 @@ Protocol PDF
     ▼
 [Concept Finders]  ← Fixed workflow nodes, not agents
     │
-    ├── index_date              ← v0.3
-    ├── follow_up_end           ← v0.3
-    ├── primary_endpoint        ← v0.3
-    ├── eligibility_inclusion   ← v0.3
-    ├── eligibility_exclusion   ← v0.3
-    ├── study_period            ← v0.3
-    ├── censoring_rules         ← v0.3
-    ├── follow_up_start         ← planned
-    ├── key_covariate           ← planned
-    └── ...
+    ├── index_date              ← v0.4
+    ├── follow_up_end           ← v0.4
+    ├── primary_endpoint        ← v0.4
+    ├── eligibility_inclusion   ← v0.4 (two-pass: inventory + detail)
+    ├── eligibility_exclusion   ← v0.4 (two-pass: inventory + detail)
+    ├── study_period            ← v0.4 (DataPrepExtraction schema)
+    ├── censoring_rules         ← v0.4
+    ├── demographics            ← v0.4
+    ├── clinical_characteristics← v0.4
+    ├── biomarkers              ← v0.4
+    ├── lab_variables           ← v0.4
+    └── treatment_variables     ← v0.4
     │
     Each finder does the same fixed sequence:
       1. Build query bank (base query + TA pack synonyms)
@@ -46,14 +49,24 @@ Protocol PDF
     concept | candidates | contradictions | confidence | provenance | concept_metadata
     │
     ▼
+[Row Writers]  ← v0.4 — deterministic row-family expansion
+    DemographicsWriter: AGE → AGE, AGEN, AGEGR, AGEGRN
+    DataPrepWriter:     evidence → ImportantDate + TimePeriod rows
+    EndpointWriter:     endpoint → EVENTFL, EVENTDT, TTOEVENT
+    CensoringWriter:    rules → CENS01, CENS01FL, CENS01DT
+    │
+    ▼
 [QC Engine]  ← Deterministic, no LLM
-    Pre-review: completeness, retrieval signal, contradictions, page refs, quote-in-chunk
+    Pre-review: completeness, retrieval signal, contradictions, page refs,
+                quote-in-chunk, Data Prep dates, demographics minimum
     Post-review: unresolved packs, cross-concept consistency, missing concepts
     │
     ▼
-[Draft Spec Generator]  ← v0.3
-    EvidencePacks → ProgramSpec (Pydantic schema)
+[Draft Spec Generator]  ← v0.4
+    EvidencePacks → Row Writers → ProgramSpec (Pydantic schema)
     Outputs: JSON + self-contained HTML preview + formatted Excel workbook
+    Excel: hidden provenance columns (J-L) + hidden _Provenance sheet
+    Stakeholder-facing tabs have NO confidence coloring
     Uses selected_candidate_id if reviewed, top-ranked candidate if draft
     │
     ▼
@@ -81,6 +94,10 @@ No fuzzy snippet matching — deterministic provenance from retrieval through to
 **Concept metadata preserved.** Concept-specific fields (e.g. `rule_type`, `components`, `time_to_event`)
 are carried through to downstream consumers via `concept_metadata` on EvidencePack.
 
+**Row writers for deterministic expansion.** Variable families (AGE → AGE/AGEN/AGEGR/AGEGRN)
+are expanded deterministically by row writers, not by the LLM. Source-specific definitions
+come from `data_sources/registry.py`.
+
 **TA packs for synonym expansion.** Not sponsor-specific — TA-level priors.
 Oncology and CV packs included. Add more as needed.
 
@@ -92,6 +109,12 @@ Swap to GPT-4o = change env vars, zero code changes.
 
 **QC staged correctly.** Pre-review QC flags issues for the reviewer (including quote-in-chunk validation).
 Post-review QC validates completeness after human selection. No false warnings.
+
+**Parse-fail gate.** If PDF parse quality is FAIL, the pipeline stops and produces a
+shell spec with a CRITICAL QC warning instead of feeding garbage into extraction.
+
+**Extracted evidence beats placeholders.** Auto-generated placeholder rows (INIT, INDEX, FUED)
+are always replaced when real extracted evidence is available from concept finders.
 
 **Device-aware retrieval.** Embedding and reranker models auto-detect GPU/CPU.
 Override with `RETRIEVAL_DEVICE` and `RETRIEVAL_FP16` env vars for explicit control.
@@ -107,7 +130,7 @@ protocol_spec_assist/
 │
 ├── ingest/
 │   ├── __init__.py
-│   └── parse_protocol.py       # Docling parser + PyMuPDF fallback
+│   └── parse_protocol.py       # Docling parser + PyMuPDF fallback + quality scoring
 │
 ├── retrieval/
 │   ├── __init__.py
@@ -128,14 +151,30 @@ protocol_spec_assist/
 │   ├── __init__.py
 │   ├── index_date.py           # Index date finder
 │   ├── endpoints.py            # follow_up_end + primary_endpoint
-│   ├── eligibility.py          # eligibility_inclusion + eligibility_exclusion
-│   └── study_design.py         # study_period + censoring_rules
+│   ├── eligibility.py          # Two-pass: inventory → per-criterion detail
+│   ├── study_design.py         # DataPrepExtraction (dates + periods) + censoring_rules
+│   ├── demographics.py         # Demographics finder (static template + LLM enrichment)
+│   ├── clinical_characteristics.py
+│   ├── biomarkers.py
+│   ├── lab_variables.py
+│   └── treatment_variables.py
+│
+├── row_completion/
+│   ├── __init__.py
+│   ├── base.py                 # RowWriter base class
+│   ├── demographics_writer.py  # AGE/SEX/RACE/ETH family expansion
+│   ├── data_prep_writer.py     # ImportantDate + TimePeriod from evidence
+│   └── outcomes_writer.py      # Endpoint + censoring variable families
+│
+├── data_sources/
+│   ├── __init__.py
+│   └── registry.py             # Source-specific definitions (COTA, Flatiron, Optum, etc.)
 │
 ├── spec_output/
 │   ├── __init__.py
 │   ├── spec_schema.py          # ProgramSpec Pydantic model + build_program_spec()
 │   ├── html_renderer.py        # Self-contained HTML preview with confidence badges
-│   └── excel_writer.py         # Formatted Excel workbook (openpyxl)
+│   └── excel_writer.py         # Excel workbook + hidden provenance sheet
 │
 ├── qc/
 │   ├── __init__.py
@@ -150,7 +189,7 @@ protocol_spec_assist/
 │
 ├── serving/
 │   ├── __init__.py
-│   └── model_client.py         # vLLM client (OpenAI-compatible, dual endpoints)
+│   └── model_client.py         # vLLM client (OpenAI-compatible, per-call max_tokens)
 │
 ├── eval/
 │   ├── __init__.py
@@ -171,16 +210,19 @@ requirements.txt                # Dependencies with lower-bound versions
 ## Setup
 
 ```bash
-# 1. Install
+# 1. Install (CPU is fine — no GPU needed for install or tests)
 pip install -e .
 
-# 2. Download models (Colab: saves to Google Drive)
+# 2. Run tests (no GPU, no vLLM needed)
+pytest tests/ -v
+
+# 3. Download models (can also be done on CPU — see TEST_RUN_GUIDE.md)
 python colab_setup.py --download-models
 
-# 3. Start vLLM (Qwen3-14B on A100 40GB)
+# 4. Start vLLM (requires A100 40GB GPU)
 python setup_vllm.py --set-env
 
-# 4. Run on a protocol
+# 5. Run on a protocol
 python -m protocol_spec_assist.workflows.protocol_run \
     data/protocols/PROTOCOL.pdf --ta oncology
 ```
@@ -203,7 +245,7 @@ RETRIEVAL_FP16=false                            # Disable fp16 (required for CPU
 
 ---
 
-## Pipeline Outputs (v0.3)
+## Pipeline Outputs (v0.4)
 
 Each run produces 4 artifacts in `data/outputs/`:
 
@@ -212,7 +254,31 @@ Each run produces 4 artifacts in `data/outputs/`:
 | `{protocol_id}_evidence_packs.json` | Raw evidence packs + QC results |
 | `{protocol_id}_spec.json` | Structured ProgramSpec (machine-readable) |
 | `{protocol_id}_spec.html` | Self-contained HTML preview with confidence badges |
-| `{protocol_id}_spec.xlsx` | Formatted Excel workbook (10 sheets, color-coded) |
+| `{protocol_id}_spec.xlsx` | Excel workbook (10 sheets + hidden _Provenance sheet) |
+
+---
+
+## v0.4 Changes
+
+### New features
+1. **Row completion layer** — `row_completion/` module with deterministic row-family expansion (DemographicsWriter, DataPrepWriter, EndpointWriter, CensoringWriter)
+2. **DataPrepExtraction schema** — replaces monolithic study_period with named operational fields (INIT, INDEX, FUED, CENSDT, STUDY_PD, PRE_INT, FU, etc.)
+3. **Two-pass eligibility** — inventory pass (lightweight list) then per-criterion detail pass to avoid token overflow on 20+ criteria
+4. **Parse quality gate** — pipeline stops on FAIL grade, produces shell spec with CRITICAL QC warning
+5. **Placeholder precedence fix** — extracted evidence from index_date/follow_up_end always replaces auto-generated placeholders
+6. **Hidden provenance** — hidden columns J-L on variable tabs + hidden _Provenance sheet; NO confidence coloring on stakeholder-facing tabs
+7. **Bullet-aware chunking** — sliding window preserves numbered/lettered/bulleted list items as atomic units
+8. **PyMuPDF micro-section merging** — merges adjacent micro-sections (reduces 552 → 142 sections on noisy PDFs)
+9. **Per-call max_tokens** — model client supports per-call override (default raised from 1536 to 4096)
+10. **StudyPop operational definitions** — definition field uses operational detail; protocol quote moved to additional_notes as provenance
+11. **Document-order chunk neighborhoods** — eligibility detail pass uses page-order neighbors, not rank-order
+12. **Contradiction detection restored** — eligibility inventory prompts detect and propagate contradictions
+13. **ETH/ETHN variable names** — aligned with data_sources/registry.py (was ETHNIC/ETHNICN)
+14. **QC expanded** — QC-007 (Data Prep completeness), QC-008 (demographics minimum), all 12 concept finders tracked
+
+### Fixes
+15. **Broadened Docling fallback** — catches all exceptions, not just ImportError
+16. **max_tokens raised** — from 1536 to 4096 for multi-row extractions
 
 ---
 
@@ -222,7 +288,7 @@ Each run produces 4 artifacts in `data/outputs/`:
 1. **9 new concept finders** — eligibility_inclusion, eligibility_exclusion, study_period, censoring_rules, demographics, clinical_characteristics, biomarkers, lab_variables, treatment_variables
 2. **Draft spec generation** — EvidencePacks → ProgramSpec with JSON + HTML + Excel outputs
 3. **HTML preview** — self-contained HTML with confidence badges, explicit/inferred markers, QC warnings
-4. **Excel workbook** — 10 sheets (1.Cover, 2.QC Review, 3.Data Prep, 4.StudyPop, 5A.Demos, 5B.ClinChars, 5C.BioVars, 5D.LabVars, 6.TreatVars, 7.Outcomes), color-coded by confidence
+4. **Excel workbook** — 10 sheets (1.Cover, 2.QC Review, 3.Data Prep, 4.StudyPop, 5A.Demos, 5B.ClinChars, 5C.BioVars, 5D.LabVars, 6.TreatVars, 7.Outcomes)
 5. **Spec uses selected candidate** — uses `selected_candidate_id` when reviewed, top-ranked when draft
 6. **qc_quote_in_chunk wired** — validates that candidate snippets appear in source chunks
 7. **Device-aware retrieval** — auto-detects GPU/CPU, respects `RETRIEVAL_DEVICE` and `RETRIEVAL_FP16` env vars
@@ -236,7 +302,6 @@ Each run produces 4 artifacts in `data/outputs/`:
 13. **GPU auto-detection** — `setup_vllm.py` detects GPU and applies workarounds
 14. **Google Drive integration** — models persist on Drive across Colab sessions (download once)
 15. **Retrieval on CPU** — embeddings/reranker default to CPU on single-GPU machines
-16. **max_tokens fix** — lowered from 16384 to 1536 to avoid context-length errors
 
 ---
 

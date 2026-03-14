@@ -254,7 +254,7 @@ def test_build_spec_with_variable_tab_packs():
 
     # Demographics now uses DemographicsWriter — expands into variable families
     # Core families: AGE (AGE, AGEN, AGEGR, AGEGRN), SEX (SEX, SEXN),
-    # RACE (RACE, RACEN), ETHNICITY (ETHNIC, ETHNICN) = 10 rows
+    # RACE (RACE, RACEN), ETHNICITY (ETH, ETHN) = 10 rows
     assert len(spec.demographics) >= 4  # at minimum core vars
     var_names = [r.variable for r in spec.demographics]
     assert "AGE" in var_names

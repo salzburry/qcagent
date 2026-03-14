@@ -5,19 +5,50 @@ Works on **Google Colab** or **any Linux machine with a GPU**.
 
 ---
 
+## IMPORTANT: CPU-First Workflow
+
+**Do as much as possible on CPU before switching to GPU.**
+
+GPU time is expensive (A100 = ~8.3 Colab units/hr). Only the LLM inference step
+(Step 5) requires a GPU. Everything else — install, tests, model downloads,
+code development, PDF preparation — runs on CPU for free.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  CPU (FREE)                                         │
+│                                                     │
+│  ✓ Install the package          (Step 1)            │
+│  ✓ Run unit tests               (Step 2)            │
+│  ✓ Download models              (Step 3)            │
+│  ✓ Prepare your protocol PDF    (Step 4)            │
+│  ✓ Debug / develop pipeline code                    │
+│  ✓ Review outputs from previous runs                │
+│                                                     │
+├─────────────────────────────────────────────────────┤
+│  A100 GPU (COSTS COMPUTE UNITS)                     │
+│                                                     │
+│  ✓ Start the LLM server        (Step 5)             │
+│  ✓ Run the pipeline            (Step 6)             │
+│                                                     │
+│  → Disconnect GPU when done to stop billing         │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Table of Contents
 
 1. [Hardware Requirements](#hardware-requirements)
 2. [Environment Setup](#environment-setup)
    - [Google Colab](#option-a-google-colab)
    - [Local Linux / Cloud VM](#option-b-local-linux--cloud-vm)
-3. [Install the Package](#step-1-install-the-package)
-4. [Download Models](#step-2-download-models)
-5. [Start the LLM Server](#step-3-start-the-llm-server)
-6. [Prepare Your Protocol PDF](#step-4-prepare-your-protocol-pdf)
-7. [Run the Pipeline](#step-5-run-the-pipeline)
-8. [Inspect Output](#step-6-inspect-the-output)
-9. [Run Unit Tests](#step-7-run-unit-tests)
+3. [Step 1: Install the Package (CPU)](#step-1-install-the-package-cpu)
+4. [Step 2: Run Unit Tests (CPU)](#step-2-run-unit-tests-cpu)
+5. [Step 3: Download Models (CPU)](#step-3-download-models-cpu)
+6. [Step 4: Prepare Your Protocol PDF (CPU)](#step-4-prepare-your-protocol-pdf-cpu)
+7. [Step 5: Start the LLM Server (GPU)](#step-5-start-the-llm-server-gpu)
+8. [Step 6: Run the Pipeline (GPU)](#step-6-run-the-pipeline-gpu)
+9. [Step 7: Inspect Output (CPU)](#step-7-inspect-the-output-cpu)
 10. [Troubleshooting](#troubleshooting)
 11. [Environment Variables](#environment-variables)
 
@@ -27,7 +58,7 @@ Works on **Google Colab** or **any Linux machine with a GPU**.
 
 | Component | Minimum |
 |-----------|---------|
-| **GPU** | 1x A100 40 GB |
+| **GPU** | 1x A100 40 GB (only for Steps 5–6) |
 | **RAM** | 32 GB |
 | **Disk** | 35 GB free (+ Google Drive for Colab) |
 | **CPU** | 8 cores |
@@ -41,7 +72,7 @@ Works on **Google Colab** or **any Linux machine with a GPU**.
 | `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Reranker |
 | Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing |
 
-**First-time download: ~33 GB.**
+**First-time download: ~33 GB.** Download on CPU — costs zero compute units.
 
 ---
 
@@ -61,13 +92,14 @@ Pick your environment below. After setup, all remaining steps (1–7) are **iden
 
 | Task | Runtime | GPU | Units |
 |------|---------|-----|-------|
-| Download models to Drive | CPU (free) | None | **0** |
+| Install + tests + download models | CPU (free) | None | **0** |
 | Debug/develop pipeline code | CPU (free) | None | **0** |
+| Prepare PDFs + review outputs | CPU (free) | None | **0** |
 | Pipeline dev & testing | A100 | ~6 hrs | **~50** |
 | Extraction runs | A100 | ~10 hrs | **~85** |
 | Buffer | — | — | **~15** |
 
-**Key rule: Do ALL setup on FREE CPU runtime. Switch to A100 only for inference.**
+**Key rule: Do ALL setup on FREE CPU runtime. Switch to A100 ONLY for inference (Steps 5–6).**
 
 #### A1. Mount Google Drive (CRITICAL)
 
@@ -92,7 +124,15 @@ print(os.listdir('/content/drive/MyDrive/'))
 %cd qcagent
 ```
 
-#### A3. Download models to Drive (run on FREE CPU runtime — costs 0 units)
+#### A3. Install + test on CPU (FREE — costs 0 units)
+
+```python
+# This runs on the free CPU runtime — no GPU needed
+!pip install -e ".[dev]"
+!pytest tests/ -q
+```
+
+#### A4. Download models to Drive (FREE — costs 0 units)
 
 ```python
 # This downloads ~33GB to your Drive. Takes 10-20 min. Costs ZERO compute units.
@@ -101,24 +141,7 @@ print(os.listdir('/content/drive/MyDrive/'))
 
 This saves models to `/content/drive/MyDrive/qcagent_models/`. They persist across sessions — **you only download once**.
 
-#### A4. Switch to A100 and start inference
-
-**Runtime → Change runtime type → A100 GPU** (starts burning compute units now).
-
-```python
-# Re-mount Drive (new VM after runtime change)
-from google.colab import drive
-drive.mount('/content/drive')
-
-%cd qcagent
-
-# Verify GPU
-!nvidia-smi
-```
-
-You should see `A100-SXM4-40GB` or similar.
-
-#### A5. Upload your protocol PDF
+#### A5. Upload your protocol PDF (FREE — costs 0 units)
 
 ```python
 import os
@@ -136,7 +159,25 @@ for filename in uploaded:
 # shutil.copy("/content/drive/MyDrive/my_protocol.pdf", "data/protocols/")
 ```
 
-#### A6. Save outputs to Drive (before session ends)
+#### A6. NOW switch to A100 (starts costing units)
+
+**Runtime → Change runtime type → A100 GPU**
+
+```python
+# Re-mount Drive (new VM after runtime change)
+from google.colab import drive
+drive.mount('/content/drive')
+
+%cd qcagent
+!pip install -e .   # Re-install (new VM)
+
+# Verify GPU
+!nvidia-smi
+```
+
+You should see `A100-SXM4-40GB` or similar. Now proceed to Step 5.
+
+#### A7. Save outputs to Drive (before session ends)
 
 ```python
 import shutil
@@ -144,13 +185,12 @@ shutil.copytree("data/outputs", "/content/drive/MyDrive/qcagent_outputs", dirs_e
 print("Outputs saved to Drive — safe from session timeout.")
 ```
 
-#### A7. Notes for Colab
+#### A8. Disconnect GPU when done
 
-- **Disconnect when idle** — Colab keeps billing even when you walk away.
-- Models on Drive load instantly on subsequent sessions — no re-download.
-- A100 40GB fits Qwen3-14B in full FP16 (~28GB VRAM). No quantization needed.
+**Runtime → Disconnect and delete runtime** to stop billing immediately.
+You can review outputs later on a free CPU runtime by loading them from Drive.
 
-**Now continue to [Step 1: Install the Package](#step-1-install-the-package).** All commands below run in Colab cells with a `!` prefix (e.g., `!pip install ...`).
+**Now continue to [Step 1: Install the Package](#step-1-install-the-package-cpu).**
 
 ---
 
@@ -159,7 +199,7 @@ print("Outputs saved to Drive — safe from session timeout.")
 #### B1. Requirements
 
 - Python 3.10 or 3.11
-- NVIDIA A100 40GB (or any GPU with >= 30GB VRAM)
+- NVIDIA A100 40GB (or any GPU with >= 30GB VRAM) — only needed for Steps 5–6
 - CUDA drivers installed (`nvidia-smi` should work)
 
 #### B2. Clone and enter the repo
@@ -183,17 +223,19 @@ mkdir -p data/protocols
 cp /path/to/your_protocol.pdf data/protocols/
 ```
 
-**Now continue to [Step 1: Install the Package](#step-1-install-the-package).**
+**Now continue to [Step 1: Install the Package](#step-1-install-the-package-cpu).**
 
 ---
 
-## Step 1: Install the Package
+## Step 1: Install the Package (CPU)
+
+**No GPU needed.** This step runs on CPU.
 
 ```bash
 # Install the project + dependencies
 pip install -e ".[dev]"
 
-# Install vLLM (the LLM server)
+# Install vLLM (only needed later for GPU inference, but install now on CPU)
 pip install vllm
 
 # Verify install
@@ -213,9 +255,36 @@ If Docling fails to install entirely, the pipeline falls back to PyMuPDF automat
 
 ---
 
-## Step 2: Download Models
+## Step 2: Run Unit Tests (CPU)
 
-### 2a. Embedding + Reranker (auto-download on first use)
+**No GPU, no vLLM, no models needed.** Verifies all code logic is correct.
+
+```bash
+pytest tests/ -v
+```
+
+You should see **120 passed, 2 skipped**.
+
+### Quick smoke test
+
+```bash
+python -c "
+from protocol_spec_assist.schemas.evidence import EvidencePack, EvidenceCandidate
+from protocol_spec_assist.qc.rules import run_all_qc, qc_quote_in_chunk
+from protocol_spec_assist.ta_packs.loader import load_ta_pack
+from protocol_spec_assist.serving.model_client import LocalModelClient, ExtractionResult
+from protocol_spec_assist.row_completion import DemographicsWriter, expand_data_prep
+print('All imports OK')
+"
+```
+
+---
+
+## Step 3: Download Models (CPU)
+
+**No GPU needed.** Downloads run on CPU and cost zero compute units.
+
+### 3a. Embedding + Reranker (auto-download on first use)
 
 These download automatically from HuggingFace when first loaded.
 To pre-download (recommended to avoid timeout during pipeline run):
@@ -230,7 +299,7 @@ huggingface-cli download BAAI/bge-m3
 huggingface-cli download BAAI/bge-reranker-v2-m3
 ```
 
-### 2b. LLM model
+### 3b. LLM model
 
 ```bash
 # Base extractor + adjudicator (~28 GB)
@@ -242,7 +311,7 @@ huggingface-cli download Qwen/Qwen3-14B
 python colab_setup.py --download-models
 ```
 
-### 2c. Docling models
+### 3c. Docling models
 
 ```bash
 python -c "from docling.utils.model_downloader import download_models; download_models()"
@@ -252,9 +321,50 @@ Without this, Docling auto-downloads on first PDF parse (~30s extra).
 
 ---
 
-## Step 3: Start the LLM Server
+## Step 4: Prepare Your Protocol PDF (CPU)
 
-### 3a. Start vLLM
+**No GPU needed.**
+
+### If your PDF is already text-based (digital)
+
+Just place it in `data/protocols/`:
+```bash
+cp your_protocol.pdf data/protocols/
+```
+
+### If your PDF is scanned (images only)
+
+You must OCR it first so the parser can extract text. Options:
+
+- **Adobe Acrobat:** File → Save As Other → Searchable PDF (recommended)
+- **ocrmypdf (free, command-line):**
+  ```bash
+  pip install ocrmypdf
+  # May also need: apt install tesseract-ocr (Linux) or brew install tesseract (Mac)
+  ocrmypdf scanned_protocol.pdf data/protocols/protocol_ocr.pdf
+  ```
+
+After OCR, verify text was extracted:
+```bash
+python -c "
+import fitz
+doc = fitz.open('data/protocols/your_protocol.pdf')
+text = doc[0].get_text()
+print(f'Page 1 text length: {len(text)} chars')
+print(text[:500])
+doc.close()
+"
+```
+
+If the output shows text, you're good. If it's empty or garbled, the OCR quality is too low.
+
+---
+
+## Step 5: Start the LLM Server (GPU)
+
+**This step requires an A100 40GB GPU.** If on Colab, switch to A100 runtime now.
+
+### 5a. Start vLLM
 
 **Recommended: use the setup script** (auto-detects GPU):
 
@@ -311,7 +421,7 @@ vllm_proc = subprocess.Popen(
 print(f"vLLM starting (PID: {vllm_proc.pid})...")
 ```
 
-### 3b. Wait for vLLM to be ready (2-3 minutes)
+### 5b. Wait for vLLM to be ready (2-3 minutes)
 
 ```python
 import urllib.request, time
@@ -336,7 +446,7 @@ Or from the terminal:
 curl http://localhost:8000/v1/models
 ```
 
-### 3c. Set environment variables
+### 5c. Set environment variables
 
 ```bash
 export VLLM_BASE_URL=http://localhost:8000/v1
@@ -356,7 +466,7 @@ os.environ["DEFAULT_MODEL"] = "Qwen/Qwen3-14B"
 os.environ["ADJUDICATOR_MODEL"] = "Qwen/Qwen3-14B"
 ```
 
-### 3d. Ollama alternative (for local testing without vLLM)
+### 5d. Ollama alternative (for local testing without vLLM)
 
 For quick local testing without setting up vLLM:
 
@@ -374,44 +484,9 @@ export ADJUDICATOR_MODEL=qwen3:14b
 
 ---
 
-## Step 4: Prepare Your Protocol PDF
+## Step 6: Run the Pipeline (GPU)
 
-### If your PDF is already text-based (digital)
-
-Just place it in `data/protocols/`:
-```bash
-cp your_protocol.pdf data/protocols/
-```
-
-### If your PDF is scanned (images only)
-
-You must OCR it first so the parser can extract text. Options:
-
-- **Adobe Acrobat:** File → Save As Other → Searchable PDF (recommended)
-- **ocrmypdf (free, command-line):**
-  ```bash
-  pip install ocrmypdf
-  # May also need: apt install tesseract-ocr (Linux) or brew install tesseract (Mac)
-  ocrmypdf scanned_protocol.pdf data/protocols/protocol_ocr.pdf
-  ```
-
-After OCR, verify text was extracted:
-```bash
-python -c "
-import fitz
-doc = fitz.open('data/protocols/your_protocol.pdf')
-text = doc[0].get_text()
-print(f'Page 1 text length: {len(text)} chars')
-print(text[:500])
-doc.close()
-"
-```
-
-If the output shows text, you're good. If it's empty or garbled, the OCR quality is too low.
-
----
-
-## Step 5: Run the Pipeline
+**Requires vLLM running (Step 5).**
 
 ```bash
 python -m protocol_spec_assist.workflows.protocol_run \
@@ -458,31 +533,35 @@ python -m protocol_spec_assist.workflows.protocol_run \
 
 ```
 Step 0: Model preflight      — verifies vLLM is reachable
-Step 1: Parse protocol        — Docling extracts sections, tables, pages (~30-120s)
+Step 1: Parse protocol        — Docling/PyMuPDF extracts sections, tables, pages (~30-120s)
+         ├── Quality scoring  — grades parse: pass / warn / fail
+         └── FAIL gate        — if grade=fail, stops here with shell spec + QC warning
 Step 2: Index protocol        — BGE-M3 embeds chunks, Qdrant indexes (~20-60s)
 Step 3: Find concepts         — 12 concept finders run sequentially:
         ├── index_date
         ├── follow_up_end
         ├── primary_endpoint
-        ├── eligibility_inclusion
-        ├── eligibility_exclusion
-        ├── study_period
+        ├── eligibility_inclusion   (two-pass: inventory → detail)
+        ├── eligibility_exclusion   (two-pass: inventory → detail)
+        ├── study_period            (DataPrepExtraction: dates + periods)
         ├── censoring_rules
         ├── demographics
         ├── clinical_characteristics
         ├── biomarkers
         ├── lab_variables
         └── treatment_variables
-Step 4: Pre-review QC         — deterministic rule checks
+Step 4: Pre-review QC         — deterministic rule checks (12 rules)
 Step 5: Save evidence packs   — JSON output
-Step 6: Generate draft spec   — JSON + HTML + Excel
+Step 6: Generate draft spec   — Row writers expand → JSON + HTML + Excel
 ```
 
 **Expected runtime:** 10-30 minutes depending on GPU and protocol length.
 
 ---
 
-## Step 6: Inspect the Output
+## Step 7: Inspect the Output (CPU)
+
+**No GPU needed.** You can disconnect the GPU runtime and review on CPU.
 
 Output files appear in `data/outputs/`:
 
@@ -491,7 +570,7 @@ Output files appear in `data/outputs/`:
 | `{id}_evidence_packs.json` | Raw evidence with ranked candidates and QC results |
 | `{id}_spec.json` | Structured ProgramSpec (machine-readable) |
 | `{id}_spec.html` | Self-contained HTML preview with confidence badges |
-| `{id}_spec.xlsx` | Excel workbook (10 sheets matching program spec template) |
+| `{id}_spec.xlsx` | Excel workbook (10 visible sheets + hidden _Provenance sheet) |
 
 ### View from terminal
 
@@ -527,35 +606,12 @@ Each concept has ranked candidates with:
 - `retrieval_score` / `rerank_score` — retrieval pipeline scores
 - `llm_confidence` — model's self-reported confidence
 
----
+### What's in the Excel workbook
 
-## Step 7: Run Unit Tests
-
-No GPU, no vLLM, no models needed. Just verifies the code logic is correct.
-
-```bash
-pytest tests/ -v
-```
-
-### Quick smoke test (no GPU, no vLLM)
-
-Verify everything imports and the CLI works:
-
-```bash
-pip install -e ".[dev]"
-
-pytest tests/ -v
-
-python -c "
-from protocol_spec_assist.schemas.evidence import EvidencePack, EvidenceCandidate
-from protocol_spec_assist.qc.rules import run_all_qc, qc_quote_in_chunk
-from protocol_spec_assist.ta_packs.loader import load_ta_pack
-from protocol_spec_assist.serving.model_client import LocalModelClient, ExtractionResult
-print('All imports OK')
-"
-
-python -m protocol_spec_assist.workflows.protocol_run --help
-```
+- **Visible tabs (10):** 1.Cover, 2.QC Review, 3.Data Prep, 4.StudyPop, 5A.Demos, 5B.ClinChars, 5C.BioVars, 5D.LabVars, 6.TreatVars, 7.Outcomes
+- **Hidden columns (J-L)** on variable tabs: Confidence, Source Page, Explicit
+- **Hidden _Provenance sheet:** Row-level provenance summary with confidence-based coloring
+- **No confidence coloring** on stakeholder-facing tabs
 
 ---
 
@@ -563,7 +619,7 @@ python -m protocol_spec_assist.workflows.protocol_run --help
 
 | Problem | Fix |
 |---------|-----|
-| `RuntimeError: Default model server not available` | vLLM isn't running. Start it (Step 3), then check `curl http://localhost:8000/v1/models` |
+| `RuntimeError: Default model server not available` | vLLM isn't running. Start it (Step 5), then check `curl http://localhost:8000/v1/models` |
 | `ImportError: No module named 'pydantic'` | Run `pip install -e ".[dev]"` |
 | `ImportError: docling` | `pip install docling` — or ignore, pipeline auto-falls-back to PyMuPDF |
 | `CUDA out of memory` | Reduce `--max-model-len` (see below) |
@@ -571,6 +627,7 @@ python -m protocol_spec_assist.workflows.protocol_run --help
 | `Engine core initialization failed. Failed core proc(s): {}` | V1 engine crash. Run `export VLLM_USE_V1=0` before starting vLLM |
 | `Empty response content from model` | Auto-retries 2x. If persistent, check `tail -30 vllm_stderr.log` |
 | Empty text from parsed PDF | Your PDF is scanned. OCR it first (Step 4) |
+| Parse quality is FAIL | Pipeline stops and generates shell spec. Provide a cleaner PDF or OCR first |
 | `No evidence candidates found` | Expected for some concepts. Check QC output |
 | Adjudicator unavailable warning | Safe to ignore. Both endpoints point to same model |
 
