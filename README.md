@@ -207,54 +207,19 @@ requirements.txt                # Dependencies with lower-bound versions
 
 ---
 
-## Setup
+## Quick Start
 
 ```bash
-# 1. Install (CPU is fine — no GPU needed for install or tests)
-pip install -e .
-
-# 2. Run tests (no GPU, no vLLM needed)
-pytest tests/ -v
-
-# 3. Download models (can also be done on CPU — see TEST_RUN_GUIDE.md)
-python colab_setup.py --download-models
-
-# 4. Start vLLM (requires A100 40GB GPU)
-python setup_vllm.py --set-env
-
-# 5. Run on a protocol
+pip install -e .                                    # CPU — no GPU needed
+pytest tests/ -v                                    # CPU — verify install
+python colab_setup.py --download-models             # CPU — download ~33GB of models
+python setup_vllm.py --set-env                      # GPU — requires A100 40GB
 python -m protocol_spec_assist.workflows.protocol_run \
-    data/protocols/PROTOCOL.pdf --ta oncology
+    data/protocols/PROTOCOL.pdf --ta oncology       # GPU — run extraction
 ```
 
----
-
-## Environment Variables
-
-```bash
-VLLM_BASE_URL=http://localhost:8000/v1         # Default model server
-ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same server (single-model setup)
-VLLM_API_KEY=local                              # API key (default: local)
-DEFAULT_MODEL=Qwen/Qwen3-14B                   # Base extractor
-ADJUDICATOR_MODEL=Qwen/Qwen3-14B              # Adjudicator (same model)
-
-# Retrieval device control (auto-detected by default)
-RETRIEVAL_DEVICE=cpu                            # Force CPU for embeddings/reranker
-RETRIEVAL_FP16=false                            # Disable fp16 (required for CPU)
-```
-
----
-
-## Pipeline Outputs (v0.4)
-
-Each run produces 4 artifacts in `data/outputs/`:
-
-| File | Content |
-|------|---------|
-| `{protocol_id}_evidence_packs.json` | Raw evidence packs + QC results |
-| `{protocol_id}_spec.json` | Structured ProgramSpec (machine-readable) |
-| `{protocol_id}_spec.html` | Self-contained HTML preview with confidence badges |
-| `{protocol_id}_spec.xlsx` | Excel workbook (10 sheets + hidden _Provenance sheet) |
+See **[TEST_RUN_GUIDE.md](TEST_RUN_GUIDE.md)** for full step-by-step instructions,
+Colab setup, environment variables, pipeline outputs, and troubleshooting.
 
 ---
 

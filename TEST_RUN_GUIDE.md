@@ -50,7 +50,6 @@ code development, PDF preparation — runs on CPU for free.
 8. [Step 6: Run the Pipeline (GPU)](#step-6-run-the-pipeline-gpu)
 9. [Step 7: Inspect Output (CPU)](#step-7-inspect-the-output-cpu)
 10. [Troubleshooting](#troubleshooting)
-11. [Environment Variables](#environment-variables)
 
 ---
 
@@ -190,7 +189,9 @@ print("Outputs saved to Drive — safe from session timeout.")
 **Runtime → Disconnect and delete runtime** to stop billing immediately.
 You can review outputs later on a free CPU runtime by loading them from Drive.
 
-**Now continue to [Step 1: Install the Package](#step-1-install-the-package-cpu).**
+**Colab setup is complete. Skip to [Step 5: Start the LLM Server](#step-5-start-the-llm-server-gpu).**
+
+(Steps 1–4 are already covered by A3–A5 above.)
 
 ---
 
@@ -676,21 +677,3 @@ Qwen3-14B needs ~28 GB VRAM. If you're running low:
 3. Use `--enforce-eager` to avoid torch.compile memory spikes
 4. T4 (16GB) is too small for this model. Use A100 40GB minimum
 
----
-
-## Environment Variables
-
-All optional. Sensible defaults are built in.
-
-```bash
-# LLM endpoints
-export VLLM_BASE_URL=http://localhost:8000/v1
-export ADJUDICATOR_BASE_URL=http://localhost:8000/v1
-export VLLM_API_KEY=local
-export DEFAULT_MODEL=Qwen/Qwen3-14B
-export ADJUDICATOR_MODEL=Qwen/Qwen3-14B
-
-# Retrieval (auto-detected, override if needed)
-export RETRIEVAL_DEVICE=cpu                             # Force CPU for embeddings
-export RETRIEVAL_FP16=false                             # Disable fp16 (required for CPU)
-```
