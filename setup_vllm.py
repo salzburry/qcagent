@@ -142,6 +142,34 @@ def wait_for_server(port, timeout=300, interval=5):
     return False
 
 
+def detect_guided_decoding_flag():
+    """
+    Detect which CLI flag the installed vLLM uses for guided decoding backend.
+
+    - vLLM <0.8.x: --guided-decoding-backend <name>
+    - vLLM >=0.8.x: --structured-outputs-config.backend <name>
+
+    Returns a list of CLI args, e.g. ["--guided-decoding-backend", "outlines"]
+    or ["--structured-outputs-config.backend", "outlines"].
+    Returns empty list if detection fails (let vLLM use its default).
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "vllm.entrypoints.openai.api_server", "--help"],
+            capture_output=True, text=True, timeout=30,
+        )
+        help_text = result.stdout + result.stderr
+    except Exception:
+        return []
+
+    if "--structured-outputs-config" in help_text:
+        return ["--structured-outputs-config.backend", "outlines"]
+    elif "--guided-decoding-backend" in help_text:
+        return ["--guided-decoding-backend", "outlines"]
+    else:
+        return []
+
+
 def main():
     parser = argparse.ArgumentParser(description="Start vLLM with GPU-aware defaults")
     parser.add_argument("--model", default="Qwen/Qwen3-14B",
@@ -220,8 +248,13 @@ def main():
         "--dtype", "auto",
         "--gpu-memory-utilization", str(args.gpu_memory_utilization),
         "--enforce-eager",  # skip torch.compile — avoids Dynamo crash in V1 engine
-        "--guided-decoding-backend", "outlines",  # better JSON schema coverage than xgrammar
     ]
+
+    # Add guided decoding backend flag (version-dependent)
+    guided_flag = detect_guided_decoding_flag()
+    if guided_flag:
+        cmd.extend(guided_flag)
+        print(f"[setup_vllm] Using guided decoding: {' '.join(guided_flag)}")
     if served_model_name:
         cmd.extend(["--served-model-name", served_model_name])
     if args.quantization:
