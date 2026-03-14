@@ -265,18 +265,24 @@ def build_program_spec(
     packs: dict[str, EvidencePack],
     protocol_id: str = "",
     qc_warnings: Optional[list[str]] = None,
+    data_source: str = "generic",
 ) -> ProgramSpec:
     """
     Translate evidence packs -> ProgramSpec (9-tab layout).
 
-    Maps existing concepts to the correct tabs:
-      - study_period      -> Data Prep (data source, important dates, time periods)
-      - index_date        -> Data Prep Section B (important dates)
-      - follow_up_end     -> Data Prep Section B + C (important dates, time periods)
+    Uses row writers for deterministic expansion where available:
+      - study_period      -> Data Prep via data_prep_writer
+      - index_date        -> Data Prep Section B (important dates) — merged with above
+      - follow_up_end     -> Data Prep Section B + C — merged with above
       - eligibility_*     -> StudyPop Section A (inclusion/exclusion criteria)
-      - primary_endpoint  -> Outcomes tab
-      - censoring_rules   -> Outcomes tab
+      - demographics      -> 5A.Demos via DemographicsWriter
+      - primary_endpoint  -> Outcomes via EndpointWriter
+      - censoring_rules   -> Outcomes via CensoringWriter
     """
+    from ..row_completion.data_prep_writer import expand_data_prep
+    from ..row_completion.demographics_writer import DemographicsWriter
+    from ..row_completion.outcomes_writer import EndpointWriter, CensoringWriter
+
     spec = ProgramSpec(
         protocol_id=protocol_id,
         qc_warnings=qc_warnings or [],
@@ -295,41 +301,18 @@ def build_program_spec(
     spec.study_info.study_id = protocol_id
     spec.tab_statuses = _default_tab_statuses()
 
-    # ── Data Prep: data source and study design ──
+    # ── Data Prep: via row writer ──
     if "study_period" in packs:
-        sp = packs["study_period"]
-        meta = sp.concept_metadata or {}
-
-        spec.data_source = DataSourceEntry(
-            data_source=meta.get("data_source") or "",
-            population_subset="",
-            version=meta.get("data_source_version") or "",
+        ds_entry, dates, periods = expand_data_prep(
+            packs["study_period"], data_source_key=data_source,
         )
+        spec.data_source = ds_entry
+        spec.important_dates.extend(dates)
+        spec.time_periods.extend(periods)
 
-        # Important dates — initial diagnosis (label derived from protocol metadata)
-        if meta.get("study_period_start") or meta.get("study_period_end"):
-            indication = meta.get("indication") or spec.study_info.indication or ""
-            init_label = f"Initial {indication} diagnosis date" if indication else "Initial diagnosis date"
-            init_def = meta.get("diagnosis_definition") or "Date of first qualifying diagnosis"
-            spec.important_dates.append(ImportantDate(
-                variable="INIT",
-                label=init_label,
-                definition=init_def,
-                additional_notes="",
-            ))
-
-        # Time periods
-        sp_start = meta.get("study_period_start") or ""
-        sp_end = meta.get("study_period_end") or ""
-        if sp_start or sp_end:
-            spec.time_periods.append(TimePeriod(
-                time_period="STUDY_PD",
-                label="Full study period",
-                definition=f"{sp_start} through {sp_end}" if sp_start and sp_end else sp_start or sp_end,
-            ))
-
-    # ── Data Prep: index date ──
-    if "index_date" in packs:
+    # ── Data Prep: index date (merge with above, avoid duplicates) ──
+    existing_date_vars = {d.variable for d in spec.important_dates}
+    if "index_date" in packs and "INDEX" not in existing_date_vars:
         idx_pack = packs["index_date"]
         gov_text = _get_governing_text(idx_pack)
         cand = _get_governing_candidate(idx_pack)
@@ -343,27 +326,31 @@ def build_program_spec(
                 confidence=cand.llm_confidence if cand else None,
             ))
 
-    # ── Data Prep: follow-up end ──
+    # ── Data Prep: follow-up end (merge, avoid duplicates) ──
+    existing_date_vars = {d.variable for d in spec.important_dates}
+    existing_period_names = {p.time_period for p in spec.time_periods}
     if "follow_up_end" in packs:
         fu_pack = packs["follow_up_end"]
         gov_text = _get_governing_text(fu_pack)
         cand = _get_governing_candidate(fu_pack)
         if gov_text:
-            spec.important_dates.append(ImportantDate(
-                variable="FUED",
-                label="End of follow-up date",
-                definition=gov_text,
-                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
-                source_page=cand.page if cand else None,
-                confidence=cand.llm_confidence if cand else None,
-            ))
-            spec.time_periods.append(TimePeriod(
-                time_period="FU",
-                label="Follow-up period",
-                definition=gov_text,
-                source_page=cand.page if cand else None,
-                confidence=cand.llm_confidence if cand else None,
-            ))
+            if "FUED" not in existing_date_vars:
+                spec.important_dates.append(ImportantDate(
+                    variable="FUED",
+                    label="End of follow-up date",
+                    definition=gov_text,
+                    additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
+                    source_page=cand.page if cand else None,
+                    confidence=cand.llm_confidence if cand else None,
+                ))
+            if "FU" not in existing_period_names:
+                spec.time_periods.append(TimePeriod(
+                    time_period="FU",
+                    label="Follow-up period",
+                    definition=gov_text,
+                    source_page=cand.page if cand else None,
+                    confidence=cand.llm_confidence if cand else None,
+                ))
 
     # ── StudyPop: inclusion criteria ──
     if "eligibility_inclusion" in packs:
@@ -407,46 +394,23 @@ def build_program_spec(
                 source_page=cand.page,
             ))
 
-    # ── Outcomes: primary endpoint ──
+    # ── Demographics: via DemographicsWriter ──
+    if "demographics" in packs:
+        writer = DemographicsWriter()
+        spec.demographics.extend(writer.expand(packs["demographics"], data_source))
+
+    # ── Outcomes: via EndpointWriter + CensoringWriter ──
     if "primary_endpoint" in packs:
-        ep_pack = packs["primary_endpoint"]
-        gov_text = _get_governing_text(ep_pack)
-        cand = _get_governing_candidate(ep_pack)
-        if gov_text:
-            spec.outcome_variables.append(VariableRow(
-                time_period="FU",
-                variable="PRIMARY_EP",
-                label="Primary Endpoint",
-                values="",
-                definition=gov_text,
-                additional_notes=f"sponsor_term: {cand.sponsor_term or 'n/a'}" if cand else "",
-                source_page=cand.page if cand else None,
-                confidence=cand.llm_confidence if cand else None,
-                explicit=cand.explicit if cand else "explicit",
-            ))
+        writer = EndpointWriter()
+        spec.outcome_variables.extend(writer.expand(packs["primary_endpoint"], data_source))
 
-    # ── Outcomes: censoring rules ──
     if "censoring_rules" in packs:
-        cr_pack = packs["censoring_rules"]
-        meta = (cr_pack.concept_metadata or {}).get("per_candidate", {})
-        candidates = cr_pack.selected_candidates if cr_pack.selected_candidates is not None else cr_pack.candidates
-        for cand in candidates:
-            cm = meta.get(cand.candidate_id, {})
-            spec.outcome_variables.append(VariableRow(
-                time_period="FU",
-                variable=cand.sponsor_term or "CENSORING",
-                label=cand.sponsor_term or "Censoring Rule",
-                values="",
-                definition=cand.snippet,
-                additional_notes=f"type: {cm.get('rule_type', 'event_based')}; applies_to: {cm.get('applies_to', 'all')}",
-                source_page=cand.page,
-                confidence=cand.llm_confidence,
-                explicit=cand.explicit,
-            ))
+        writer = CensoringWriter()
+        spec.outcome_variables.extend(writer.expand(packs["censoring_rules"], data_source))
 
-    # ── Variable tabs (5A–6): demographics, clinical chars, biomarkers, labs, treatment ──
+    # ── Variable tabs (5B–6): clinical chars, biomarkers, labs, treatment ──
+    # These still use the direct candidate-to-row mapping (no row-family expansion yet)
     _VARIABLE_TAB_CONCEPTS = {
-        "demographics": "demographics",
         "clinical_characteristics": "clinical_characteristics",
         "biomarkers": "biomarkers",
         "lab_variables": "lab_variables",
@@ -475,7 +439,8 @@ def build_program_spec(
             ))
 
     # ── Unmapped variables: LLM-found variables not in any static template ──
-    for concept_key in _VARIABLE_TAB_CONCEPTS:
+    all_variable_concepts = {"demographics"} | set(_VARIABLE_TAB_CONCEPTS.keys())
+    for concept_key in all_variable_concepts:
         if concept_key not in packs:
             continue
         var_pack = packs[concept_key]

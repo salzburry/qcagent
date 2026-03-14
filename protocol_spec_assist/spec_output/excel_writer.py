@@ -100,7 +100,11 @@ VAR_WIDTHS = [14, 16, 24, 18, 55, 16, 40, 18, 18]
 
 
 def _write_variable_tab(ws, rows, section_title: str = ""):
-    """Write a standardised variable tab with the shared column layout."""
+    """Write a standardised variable tab with the shared column layout.
+
+    Visible columns A-I match the RWDAP template.
+    Hidden columns J-L carry provenance (Confidence, Source Page, Explicit).
+    """
     r = 1
     if section_title:
         _write_section_row(ws, r, section_title, len(VAR_HEADERS))
@@ -113,8 +117,9 @@ def _write_variable_tab(ws, rows, section_title: str = ""):
     ))
     r += 1
 
-    # Column headers
-    _write_header_row(ws, r, VAR_HEADERS)
+    # Column headers (visible + hidden provenance)
+    all_headers = VAR_HEADERS + ["Confidence", "Source Page", "Explicit"]
+    _write_header_row(ws, r, all_headers)
     r += 1
 
     # Data rows
@@ -129,13 +134,22 @@ def _write_variable_tab(ws, rows, section_title: str = ""):
             var_row.additional_notes,
             var_row.date_modified,
             var_row.qc_reviewed,
+            # Hidden provenance columns
+            var_row.confidence,
+            var_row.source_page,
+            var_row.explicit,
         ]
         _write_data_row(ws, r, values, confidence=var_row.confidence)
         r += 1
 
-    # Column widths
+    # Column widths (visible)
     for i, w in enumerate(VAR_WIDTHS):
         ws.column_dimensions[chr(65 + i)].width = w
+
+    # Hide provenance columns (J=Confidence, K=Source Page, L=Explicit)
+    ws.column_dimensions["J"].hidden = True
+    ws.column_dimensions["K"].hidden = True
+    ws.column_dimensions["L"].hidden = True
 
 
 def save_excel(spec: ProgramSpec, output_path: str) -> str:
@@ -336,8 +350,77 @@ def save_excel(spec: ProgramSpec, output_path: str) -> str:
         ws_tab = wb.create_sheet(tab_name)
         _write_variable_tab(ws_tab, rows, section_title=section_title)
 
+    # ── Hidden provenance summary sheet ───────────────────────────────────
+    _write_provenance_sheet(wb, spec, tab_configs)
+
     # Save
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(path))
     return str(path)
+
+
+def _write_provenance_sheet(wb, spec: ProgramSpec, tab_configs: list):
+    """Write a hidden _Provenance sheet summarising all row-level provenance.
+
+    Columns: Tab | Row# | Variable | Confidence | Source Page | Explicit
+    This gives reviewers a single view of extraction quality without
+    cluttering the visible workbook.
+    """
+    ws = wb.create_sheet("_Provenance")
+    ws.sheet_state = "hidden"
+
+    headers = ["Tab", "Row #", "Variable", "Label", "Confidence",
+               "Source Page", "Explicit", "Definition (excerpt)"]
+    _write_header_row(ws, 1, headers)
+
+    r = 2
+
+    # Data Prep important dates
+    for i, dt in enumerate(spec.important_dates, 1):
+        _write_data_row(ws, r, [
+            "3.Data Prep", i, dt.variable, dt.label,
+            dt.confidence, dt.source_page, "",
+            (dt.definition or "")[:100],
+        ], confidence=dt.confidence)
+        r += 1
+
+    # Data Prep time periods
+    for i, tp in enumerate(spec.time_periods, 1):
+        _write_data_row(ws, r, [
+            "3.Data Prep", i, tp.time_period, tp.label,
+            tp.confidence, tp.source_page, "",
+            (tp.definition or "")[:100],
+        ], confidence=tp.confidence)
+        r += 1
+
+    # StudyPop criteria
+    for i, crit in enumerate(spec.inclusion_criteria, 1):
+        _write_data_row(ws, r, [
+            "4.StudyPop (Inc)", i, crit.variable, crit.label,
+            crit.confidence, crit.source_page, crit.explicit,
+            (crit.definition or "")[:100],
+        ], confidence=crit.confidence)
+        r += 1
+    for i, crit in enumerate(spec.exclusion_criteria, 1):
+        _write_data_row(ws, r, [
+            "4.StudyPop (Exc)", i, crit.variable, crit.label,
+            crit.confidence, crit.source_page, crit.explicit,
+            (crit.definition or "")[:100],
+        ], confidence=crit.confidence)
+        r += 1
+
+    # Variable tabs
+    for tab_name, rows, _ in tab_configs:
+        for i, var_row in enumerate(rows, 1):
+            _write_data_row(ws, r, [
+                tab_name, i, var_row.variable, var_row.label,
+                var_row.confidence, var_row.source_page, var_row.explicit,
+                (var_row.definition or "")[:100],
+            ], confidence=var_row.confidence)
+            r += 1
+
+    # Column widths
+    widths = [16, 6, 18, 24, 12, 12, 12, 60]
+    for i, w in enumerate(widths):
+        ws.column_dimensions[chr(65 + i)].width = w

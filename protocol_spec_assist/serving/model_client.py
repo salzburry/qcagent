@@ -29,9 +29,8 @@ class ModelConfig(BaseModel):
     default_model: str = "Qwen/Qwen3-14B"
     adjudicator_model: str = "Qwen/Qwen3-14B"
     temperature: float = 0.0                              # deterministic extraction
-    max_tokens: int = 1536                                # conservative — avoids blowing
-                                                          # past server's max-model-len when
-                                                          # combined with a long prompt
+    max_tokens: int = 4096                                 # headroom for multi-row extractions
+                                                          # (eligibility, data prep, censoring)
     max_retries: int = 2                                  # retry on transient failures
     timeout: float = 120.0                                # seconds
 
@@ -130,14 +129,19 @@ class LocalModelClient:
         schema: Type[T],
         use_adjudicator: bool = False,
         prompt_version: str = "0.3.0",
+        max_tokens: Optional[int] = None,
     ) -> ExtractionResult:
         """
         Extract structured output from LLM, schema-constrained.
         Returns ExtractionResult with parsed object, model_used, and raw response.
         Retries on transient failures. Raises on persistent failure.
+
+        Args:
+            max_tokens: Per-call override. Falls back to config default if None.
         """
         client = self._get_client(use_adjudicator=use_adjudicator)
         model = self.config.adjudicator_model if use_adjudicator else self.config.default_model
+        tokens = max_tokens or self.config.max_tokens
 
         last_error = None
         for attempt in range(1 + self.config.max_retries):
@@ -149,7 +153,7 @@ class LocalModelClient:
                         {"role": "user", "content": user_prompt},
                     ],
                     temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
+                    max_tokens=tokens,
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
