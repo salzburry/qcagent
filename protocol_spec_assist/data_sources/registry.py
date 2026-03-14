@@ -37,7 +37,12 @@ _SOURCE_KEYWORDS = {
 
 
 def detect_source(data_source_text: str) -> str:
-    """Detect data source key from free-text data source name."""
+    """Detect data source key from free-text data source name.
+
+    Single-channel detection: matches keywords against a single input string.
+    For multi-channel detection across multiple evidence sources, use
+    detect_source_multi().
+    """
     if not data_source_text:
         return "generic"
     lower = data_source_text.lower()
@@ -45,6 +50,51 @@ def detect_source(data_source_text: str) -> str:
         for kw in keywords:
             if kw in lower:
                 return source_key
+    return "generic"
+
+
+def detect_source_multi(
+    *,
+    data_source_override: str = "",
+    study_period_metadata: dict | None = None,
+    protocol_title: str = "",
+    protocol_text_sample: str = "",
+) -> str:
+    """Multi-channel data source detection.
+
+    Uses multiple evidence channels in priority order:
+      1. Explicit user override (highest priority)
+      2. Data source from study_period concept extraction
+      3. Protocol title (often contains database name)
+      4. Protocol text sample (methods/data source sections)
+
+    Returns the detected source key, or "generic" if no match.
+    """
+    # Channel 1: explicit override
+    if data_source_override:
+        result = detect_source(data_source_override)
+        if result != "generic":
+            return result
+
+    # Channel 2: study_period extraction metadata
+    if study_period_metadata:
+        sp_source = study_period_metadata.get("data_source") or ""
+        result = detect_source(sp_source)
+        if result != "generic":
+            return result
+
+    # Channel 3: protocol title
+    if protocol_title:
+        result = detect_source(protocol_title)
+        if result != "generic":
+            return result
+
+    # Channel 4: protocol text sample (first ~2000 chars of methods/data sections)
+    if protocol_text_sample:
+        result = detect_source(protocol_text_sample)
+        if result != "generic":
+            return result
+
     return "generic"
 
 

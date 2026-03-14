@@ -405,6 +405,38 @@ def build_program_spec(
                 source_page=cand.page,
             ))
 
+    # ── StudyPop: cohort definitions (Section B) ──
+    if "cohort_definitions" in packs:
+        coh_pack = packs["cohort_definitions"]
+        coh_meta = (coh_pack.concept_metadata or {}).get("per_candidate", {})
+        coh_candidates = coh_pack.selected_candidates if coh_pack.selected_candidates is not None else coh_pack.candidates
+        for cand in coh_candidates:
+            cm = coh_meta.get(cand.candidate_id, {})
+            spec.cohort_definitions.append(CohortRow(
+                variable=cm.get("cohort_variable", cand.sponsor_term or ""),
+                label=cm.get("cohort_label", cand.sponsor_term or ""),
+                values=cm.get("values", ""),
+                definition=cm.get("definition", cand.snippet),
+                additional_notes=f'Protocol text: "{cand.snippet}"' if cm.get("definition") else "",
+                source_page=cand.page,
+                confidence=cand.llm_confidence,
+            ))
+
+    # ── Data Prep: source data preparation issues (Section D) ──
+    if "source_data_prep" in packs:
+        sdp_pack = packs["source_data_prep"]
+        sdp_meta = (sdp_pack.concept_metadata or {}).get("per_candidate", {})
+        sdp_candidates = sdp_pack.selected_candidates if sdp_pack.selected_candidates is not None else sdp_pack.candidates
+        for i, cand in enumerate(sdp_candidates, 1):
+            cm = sdp_meta.get(cand.candidate_id, {})
+            spec.source_data_prep.append(SourceDataPrep(
+                row_number=i,
+                source_table_variable=cm.get("source_table_variable", cand.sponsor_term or ""),
+                situation=cm.get("situation", ""),
+                action=cm.get("action", ""),
+                reasoning=cm.get("reasoning", cand.snippet),
+            ))
+
     # ── Demographics: via DemographicsWriter ──
     if "demographics" in packs:
         writer = DemographicsWriter()

@@ -34,12 +34,14 @@ from ..concepts.index_date import find_index_date
 from ..concepts.endpoints import find_follow_up_end, find_primary_endpoint
 from ..concepts.eligibility import find_inclusion_criteria, find_exclusion_criteria
 from ..concepts.study_design import find_study_period, find_data_prep_dates, find_censoring_rules
+from ..concepts.cohort_definitions import find_cohort_definitions
+from ..concepts.source_data_prep import find_source_data_prep
 from ..concepts.demographics import find_demographics
 from ..concepts.clinical_characteristics import find_clinical_characteristics
 from ..concepts.biomarkers import find_biomarkers
 from ..concepts.lab_variables import find_lab_variables
 from ..concepts.treatment_variables import find_treatment_variables
-from ..data_sources.registry import detect_source
+from ..data_sources.registry import detect_source, detect_source_multi
 from ..schemas.evidence import EvidencePack
 from ..qc.rules import run_all_qc, summarize_qc
 from ..spec_output.spec_schema import build_program_spec
@@ -132,6 +134,16 @@ def task_find_study_period(pid, index, client, ta_pack) -> dict:
 @task(name="find-censoring-rules", cache_policy=NO_CACHE)
 def task_find_censoring_rules(pid, index, client, ta_pack) -> dict:
     return _run_concept_finder(find_censoring_rules, pid, index, client, ta_pack)
+
+
+@task(name="find-cohort-definitions", cache_policy=NO_CACHE)
+def task_find_cohort_definitions(pid, index, client, ta_pack) -> dict:
+    return _run_concept_finder(find_cohort_definitions, pid, index, client, ta_pack)
+
+
+@task(name="find-source-data-prep", cache_policy=NO_CACHE)
+def task_find_source_data_prep(pid, index, client, ta_pack, data_source="generic") -> dict:
+    return _run_concept_finder(find_source_data_prep, pid, index, client, ta_pack, data_source=data_source)
 
 
 @task(name="find-demographics", cache_policy=NO_CACHE)
@@ -329,20 +341,37 @@ def protocol_run(
     study_period_pack = task_find_study_period(pid, index, client, ta_pack)
     censoring_rules_pack = task_find_censoring_rules(pid, index, client, ta_pack)
 
-    # Step 3b: Data source — explicit override takes precedence over auto-detection
-    if data_source_override:
-        detected_source = detect_source(data_source_override)
-        logger.info(f"Using explicit data source override: {data_source_override} → {detected_source}")
-    else:
-        sp_meta = study_period_pack.get("concept_metadata") or {}
-        detected_source = detect_source(sp_meta.get("data_source", ""))
-        logger.info(f"Auto-detected data source: {detected_source}")
+    # Step 3b: Cohort definitions + censoring rules (no source dependency)
+    cohort_pack = task_find_cohort_definitions(pid, index, client, ta_pack)
 
+    # Step 3c: Multi-channel data source detection
+    # Uses: explicit override > study_period extraction > protocol title > protocol text
+    sp_meta = study_period_pack.get("concept_metadata") or {}
+    protocol_title = parse_result.get("title") or ""
+    # Sample from first few chunks for source keyword detection
+    protocol_text_sample = " ".join(
+        c.get("text", "")[:200] for c in parse_result["chunks"][:5]
+    )
+    detected_source = detect_source_multi(
+        data_source_override=data_source_override or "",
+        study_period_metadata=sp_meta,
+        protocol_title=protocol_title,
+        protocol_text_sample=protocol_text_sample,
+    )
+    logger.info(f"Data source detected: {detected_source} "
+                f"(override={data_source_override or 'none'}, "
+                f"sp_meta={sp_meta.get('data_source', 'none')}, "
+                f"title={'matched' if detect_source(protocol_title) != 'generic' else 'no match'})")
+
+    # Step 3d: Source-dependent concept finders
     demographics_pack = task_find_demographics(pid, index, client, ta_pack, detected_source)
     clinical_chars_pack = task_find_clinical_characteristics(pid, index, client, ta_pack, detected_source)
     biomarkers_pack = task_find_biomarkers(pid, index, client, ta_pack, detected_source)
     lab_variables_pack = task_find_lab_variables(pid, index, client, ta_pack, detected_source)
     treatment_vars_pack = task_find_treatment_variables(pid, index, client, ta_pack, detected_source)
+
+    # Step 3e: Source data preparation issues (needs detected source)
+    source_data_prep_pack = task_find_source_data_prep(pid, index, client, ta_pack, detected_source)
 
     packs = {
         "index_date": index_date_pack,
@@ -352,6 +381,8 @@ def protocol_run(
         "eligibility_exclusion": exclusion_pack,
         "study_period": study_period_pack,
         "censoring_rules": censoring_rules_pack,
+        "cohort_definitions": cohort_pack,
+        "source_data_prep": source_data_prep_pack,
         "demographics": demographics_pack,
         "clinical_characteristics": clinical_chars_pack,
         "biomarkers": biomarkers_pack,

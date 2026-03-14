@@ -25,6 +25,8 @@ ConceptName = Literal[
     "secondary_endpoint",
     "eligibility_inclusion",
     "eligibility_exclusion",
+    "cohort_definitions",
+    "source_data_prep",
     "data_source",
     "analysis_population",
     "key_covariate",
