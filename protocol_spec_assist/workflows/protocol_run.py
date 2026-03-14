@@ -374,7 +374,16 @@ def protocol_run(
     treatment_vars_pack = task_find_treatment_variables(pid, index, client, ta_pack, detected_source)
 
     # Step 3e: Source data preparation issues (needs detected source)
-    source_data_prep_pack = task_find_source_data_prep(pid, index, client, ta_pack, detected_source)
+    # Wrapped in try/except because this finder can timeout on large prompts
+    # or when GPU memory is constrained. Falls back to registry-only issues.
+    try:
+        source_data_prep_pack = task_find_source_data_prep(pid, index, client, ta_pack, detected_source)
+    except Exception as e:
+        logger.warning(f"source_data_prep finder failed ({type(e).__name__}: {e}). "
+                       f"Falling back to registry-only source limitations.")
+        from .concepts.source_data_prep import _build_source_limitation_pack
+        fallback_pack = _build_source_limitation_pack(pid, detected_source)
+        source_data_prep_pack = fallback_pack.model_dump()
 
     packs = {
         "index_date": index_date_pack,
