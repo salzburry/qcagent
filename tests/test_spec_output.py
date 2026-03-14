@@ -4,7 +4,7 @@ import json
 import pytest
 from protocol_spec_assist.schemas.evidence import EvidencePack, EvidenceCandidate
 from protocol_spec_assist.spec_output.spec_schema import (
-    ProgramSpec, build_program_spec, SpecEntry, VariableRow, CriterionRow,
+    ProgramSpec, build_program_spec, VariableRow, CriterionRow,
 )
 from protocol_spec_assist.spec_output.html_renderer import render_html
 
@@ -241,7 +241,8 @@ def test_build_spec_with_variable_tab_packs():
             protocol_id="P001", concept="treatment_variables",
             candidates=[
                 EvidenceCandidate(candidate_id="t1", snippet="Count of LOTs",
-                    canonical_term="LOTN", sponsor_term="LOTN", llm_confidence=0.9),
+                    canonical_term="LOTN", sponsor_term="LOTN", llm_confidence=0.9,
+                    page=5, explicit="explicit"),
             ],
             overall_confidence=0.85,
             concept_metadata={"per_candidate": {
@@ -253,20 +254,23 @@ def test_build_spec_with_variable_tab_packs():
     spec = build_program_spec(packs, protocol_id="P001")
 
     # Demographics now uses DemographicsWriter — expands into variable families
-    # Core families: AGE (AGE, AGEN, AGEGR, AGEGRN), SEX (SEX, SEXN),
-    # RACE (RACE, RACEN), ETHNICITY (ETH, ETHN) = 10 rows
-    assert len(spec.demographics) >= 4  # at minimum core vars
+    assert len(spec.demographics) >= 4
     var_names = [r.variable for r in spec.demographics]
     assert "AGE" in var_names
     assert "SEX" in var_names
 
-    # Treatment variables should be in spec.treatment_variables
+    # Treatment variables should be in spec.treatment_variables (explicit with page)
     assert len(spec.treatment_variables) == 1
     assert spec.treatment_variables[0].variable == "LOTN"
 
 
 def test_build_spec_all_variable_tabs():
-    """Test all 5 variable tab concepts map correctly."""
+    """Test all 5 variable tab concepts map correctly.
+
+    Non-demographics variable tabs now have provenance gating:
+    rows marked 'inferred' with no source page are excluded.
+    So we set explicit='explicit' and page=1 to pass the gate.
+    """
     concept_fields = {
         "demographics": "demographics",
         "clinical_characteristics": "clinical_characteristics",
@@ -280,7 +284,8 @@ def test_build_spec_all_variable_tabs():
             protocol_id="P001", concept=concept,
             candidates=[
                 EvidenceCandidate(candidate_id=f"{concept}_c1", snippet=f"def for {concept}",
-                    canonical_term=f"VAR_{concept}", sponsor_term=f"VAR_{concept}", llm_confidence=0.8),
+                    canonical_term=f"VAR_{concept}", sponsor_term=f"VAR_{concept}",
+                    llm_confidence=0.8, page=1, explicit="explicit"),
             ],
             overall_confidence=0.8,
             concept_metadata={"per_candidate": {
@@ -294,7 +299,6 @@ def test_build_spec_all_variable_tabs():
     for concept, field in concept_fields.items():
         rows = getattr(spec, field)
         if concept == "demographics":
-            # Demographics uses DemographicsWriter with family expansion
             assert len(rows) >= 4, f"{field} should have at least 4 rows (core families)"
             var_names = [r.variable for r in rows]
             assert "AGE" in var_names
@@ -351,25 +355,20 @@ def test_lab_variables_static_template_with_source():
 def test_clinical_chars_static_template():
     from protocol_spec_assist.concepts.clinical_characteristics import STATIC_TEMPLATE, _build_static_only_pack
     var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
-    assert "ECOG" in var_names
-    assert "STAGE" in var_names
+    # Only domain-neutral vars remain (CCI). Oncology vars (ECOG, STAGE, BSYMPT, etc.) removed.
     assert "CCI" in var_names
-    assert "BSYMPT" in var_names
+    assert "ECOG" not in var_names  # oncology-specific, removed from generic path
+    assert "STAGE" not in var_names
+    assert "BSYMPT" not in var_names
     pack = _build_static_only_pack("P001")
     assert len(pack.candidates) == len(STATIC_TEMPLATE)
 
 
 def test_biomarkers_static_template():
-    from protocol_spec_assist.concepts.biomarkers import STATIC_TEMPLATE, _build_static_only_pack
-    var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
-    assert "BCL2" in var_names
-    assert "MYC" in var_names
-    assert "CD20" in var_names
-    assert "DBLHIT" in var_names
-    # Each marker has 5 sub-variables + 2 composites
-    assert len(STATIC_TEMPLATE) >= 70
-    pack = _build_static_only_pack("P001")
-    assert len(pack.candidates) == len(STATIC_TEMPLATE)
+    from protocol_spec_assist.concepts.biomarkers import STATIC_TEMPLATE
+    # Biomarkers template is now empty — all disease-specific markers removed
+    # from generic path. They are only extracted if the protocol defines them.
+    assert len(STATIC_TEMPLATE) == 0
 
 
 def test_lab_variables_static_template():
@@ -385,15 +384,10 @@ def test_lab_variables_static_template():
 
 
 def test_treatment_variables_static_template():
-    from protocol_spec_assist.concepts.treatment_variables import STATIC_TEMPLATE, _build_static_only_pack
-    var_names = [t["variable_name"] for t in STATIC_TEMPLATE]
-    assert "LOTN" in var_names
-    assert "LOT1SD" in var_names
-    assert "LOT1" in var_names
-    assert "CSD" in var_names
-    assert "TTNT" in var_names
-    pack = _build_static_only_pack("P001")
-    assert len(pack.candidates) == len(STATIC_TEMPLATE)
+    from protocol_spec_assist.concepts.treatment_variables import STATIC_TEMPLATE
+    # Treatment template is now empty — LOT/maintenance/chemo variables removed
+    # from generic path. They are only extracted if the protocol defines them.
+    assert len(STATIC_TEMPLATE) == 0
 
 
 def test_demographics_merge_with_static():

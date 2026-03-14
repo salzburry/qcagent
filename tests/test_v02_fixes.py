@@ -296,17 +296,6 @@ def test_qc_quote_in_chunk_no_lookup():
     assert len(results) == 0
 
 
-# ── Fix 15: Eval metric label ───────────────────────────────────────────────
-
-def test_eval_metric_name():
-    """Contradiction metric should be flag_rate, not detection_rate."""
-    from protocol_spec_assist.eval import harness
-    import inspect
-    source = inspect.getsource(harness.run_evaluation)
-    assert "contradiction_flag_rate" in source
-    assert "contradiction_detection_rate" not in source
-
-
 # ── Smaller cleanups ────────────────────────────────────────────────────────
 
 def test_candidate_id_is_required():

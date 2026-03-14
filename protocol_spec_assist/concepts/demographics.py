@@ -7,25 +7,21 @@ BMI, weight, height, BSA, smoking status, etc.
 """
 
 from __future__ import annotations
-import hashlib
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
-from ..retrieval.search import ProtocolIndex, RetrievedChunk
+from ..schemas.evidence import EvidencePack, ExplicitType
+from ..retrieval.search import ProtocolIndex
 from ..serving.model_client import LocalModelClient
-from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
-from ..data_sources.registry import resolve_static_template
+from ..ta_packs.loader import TAPack
+from .base import run_template_finder, merge_with_static_template as _base_merge, build_static_only_pack as _base_static
 
 CONCEPT = "demographics"
 FINDER_VERSION = "0.3.0"
 PROMPT_VERSION = "0.3.0"
-CONFIDENCE_THRESHOLD = 0.65
 
 # ── Static variable template ─────────────────────────────────────────────────
-# Exhaustive list of expected demographic variables.
-# These are ALWAYS included in the spec output (as "inferred" if not found in protocol).
-# The LLM's job is to confirm and customize definitions from actual protocol text.
+# Demographics are domain-neutral (age, sex, race apply to all TAs).
 STATIC_TEMPLATE = [
     {"time_period": "STUDY_PD", "variable_name": "AGE", "label": "Age at Index", "values": "numeric", "definition": "Computed from patient/date_of_birth and INDEX date; if date_of_birth missing, use patient/age_at_diagnosis", "code_lists_group": "", "additional_notes": "Single value per patient, copy to all cohorts"},
     {"time_period": "STUDY_PD", "variable_name": "AGEGR", "label": "Age Group", "values": "<65; 65-74; >=75", "definition": "Derived from AGE: <65, 65-74, >=75", "code_lists_group": "", "additional_notes": ""},
@@ -104,110 +100,17 @@ Rules:
 - Return chunk_id for provenance.
 - Respond ONLY with valid JSON matching the schema."""
 
+BASE_QUERY = (
+    "demographics age sex race ethnicity BMI weight height "
+    "practice type baseline characteristics patient population"
+)
+
 
 def _merge_with_static_template(extraction_variables, static_template):
-    """Merge LLM-extracted variables with the static template.
+    return _base_merge(extraction_variables, static_template, DemographicsExtraction.VariableExtraction)
 
-    Strategy: start from the static template (guaranteed correct tab placement).
-    If the LLM found a matching variable (by variable_name), use the LLM's
-    definition/values/notes (which are protocol-specific). Otherwise keep the
-    static default and mark as 'inferred'.
-
-    Any extra variables the LLM found that aren't in the template are appended
-    at the end (the LLM may have found protocol-specific variables we didn't
-    pre-define).
-    """
-    llm_by_name = {}
-    for v in extraction_variables:
-        llm_by_name[v.variable_name.upper()] = v
-
-    merged = []
-    used_names = set()
-
-    # Use the VariableExtraction class from the extraction schema
-    VarClass = DemographicsExtraction.VariableExtraction
-
-    for tmpl in static_template:
-        name = tmpl["variable_name"].upper()
-        used_names.add(name)
-        if name in llm_by_name:
-            # LLM found this variable — use its protocol-specific data
-            merged.append(llm_by_name[name])
-        else:
-            # Not found by LLM — keep static default as inferred
-            merged.append(VarClass(
-                chunk_id=None,
-                time_period=tmpl["time_period"],
-                variable_name=tmpl["variable_name"],
-                label=tmpl["label"],
-                values=tmpl["values"],
-                definition=tmpl["definition"],
-                code_lists_group=tmpl.get("code_lists_group", ""),
-                additional_notes=tmpl.get("additional_notes", ""),
-                sponsor_term=None,
-                explicit="inferred",
-                confidence=0.5,
-                reasoning="Static template default — not confirmed in protocol text",
-            ))
-
-    # Extra LLM-found variables not in template go to unmapped bucket
-    # (not auto-appended to this tab — prevents model contamination)
-    unmapped = []
-    for v in extraction_variables:
-        if v.variable_name.upper() not in used_names:
-            unmapped.append(v)
-
-    return [m for m in merged if m is not None], unmapped
-
-
-def _build_user_prompt(chunks, ta_warning, protocol_id):
-    context_parts = []
-    for chunk in chunks:
-        context_parts.append(
-            f"[chunk_id={chunk.chunk_id} | Section: {chunk.heading} | "
-            f"Type: {chunk.source_type} | Page: {chunk.page} | "
-            f"Score: {chunk.score:.2f}]\n{chunk.text}"
-        )
-    context = "\n\n---\n\n".join(context_parts)
-    warning_block = f"\nTA PACK WARNING: {ta_warning}\n" if ta_warning else ""
-    return f"""Protocol ID: {protocol_id}
-{warning_block}
-Extract all demographic variable definitions from the following protocol text chunks.
-
-{context}"""
-
-
-def _build_static_only_pack(protocol_id: str, data_source: str = "generic") -> EvidencePack:
-    """Build an EvidencePack from static template alone (no LLM, no retrieval)."""
-    resolved = resolve_static_template(STATIC_TEMPLATE, data_source, CONCEPT)
-    candidates = []
-    per_candidate_meta = {}
-    for tmpl in resolved:
-        candidate_id = hashlib.sha256(
-            f"{protocol_id}:{CONCEPT}:static:{tmpl['variable_name']}:{tmpl['definition']}".encode()
-        ).hexdigest()[:12]
-        candidates.append(EvidenceCandidate(
-            candidate_id=candidate_id, chunk_id=None,
-            snippet=tmpl["definition"], page=None, section_title="",
-            source_type="narrative",
-            sponsor_term=tmpl["variable_name"],
-            canonical_term=tmpl["variable_name"],
-            llm_confidence=0.5, explicit="inferred",
-        ))
-        per_candidate_meta[candidate_id] = {
-            "time_period": tmpl["time_period"], "variable_name": tmpl["variable_name"],
-            "label": tmpl["label"], "values": tmpl["values"],
-            "code_lists_group": tmpl.get("code_lists_group", ""),
-            "additional_notes": tmpl.get("additional_notes", ""),
-        }
-    return EvidencePack(
-        protocol_id=protocol_id, concept=CONCEPT, candidates=candidates,
-        overall_confidence=0.5,
-        concept_metadata={"per_candidate": per_candidate_meta},
-        low_retrieval_signal=True, requires_human_selection=True,
-        finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
-        model_used="static_template",
-    )
+def _build_static_only_pack(protocol_id, data_source="generic"):
+    return _base_static(protocol_id, CONCEPT, STATIC_TEMPLATE, data_source, FINDER_VERSION, PROMPT_VERSION)
 
 
 def find_demographics(
@@ -218,106 +121,14 @@ def find_demographics(
     data_source: str = "generic",
 ) -> EvidencePack:
     """Run the demographics concept finder workflow."""
-
-    # Step 1: Build query bank
-    queries = build_query_bank(
-        "demographics age sex race ethnicity BMI weight height practice type baseline characteristics patient population",
-        ta_pack, CONCEPT,
-    )
-
-    # Step 2: Hybrid retrieval
-    priority_sections = get_section_priority(ta_pack, CONCEPT)
-    chunks = index.search(
-        query=queries[0], protocol_id=protocol_id,
-        concept_queries=queries[1:],
-        top_k_retrieve=25, top_k_rerank=10,
-        include_tables=True, priority_sections=priority_sections,
-    )
-
-    if not chunks:
-        # No protocol text found — return static template as inferred defaults
-        return _build_static_only_pack(protocol_id, data_source)
-
-    # Step 3: TA warning
-    ta_warning = get_hotspot_warning(ta_pack, CONCEPT)
-
-    # Step 4: LLM extraction
-    user_prompt = _build_user_prompt(chunks, ta_warning, protocol_id)
-    result = client.extract(
-        system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt,
-        schema=DemographicsExtraction, use_adjudicator=False,
+    return run_template_finder(
+        protocol_id, index, client, ta_pack, data_source,
+        concept=CONCEPT,
+        base_query=BASE_QUERY,
+        system_prompt=SYSTEM_PROMPT,
+        extraction_schema=DemographicsExtraction,
+        static_template=STATIC_TEMPLATE,
+        finder_version=FINDER_VERSION,
         prompt_version=PROMPT_VERSION,
+        finder_name="DemographicsFinder",
     )
-    extraction, model_used = result.parsed, result.model_used
-
-    # Step 5: Confidence router
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt,
-                schema=DemographicsExtraction, use_adjudicator=True,
-                prompt_version=PROMPT_VERSION,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception:
-            pass
-
-    # Step 6: Merge with source-resolved static template (ensures correct tab placement)
-    resolved_template = resolve_static_template(STATIC_TEMPLATE, data_source, CONCEPT)
-    merged_variables, unmapped_variables = _merge_with_static_template(extraction.variables, resolved_template)
-
-    # Step 7: Build EvidencePack
-    chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
-    candidates = []
-    per_candidate_meta = {}
-
-    for v in merged_variables:
-        matching_chunk = chunk_by_id.get(v.chunk_id) if v.chunk_id else None
-        candidate_id = hashlib.sha256(
-            f"{protocol_id}:{CONCEPT}:{v.chunk_id or ''}:{v.variable_name}:{v.definition}".encode()
-        ).hexdigest()[:12]
-
-        candidates.append(EvidenceCandidate(
-            candidate_id=candidate_id, chunk_id=v.chunk_id,
-            snippet=v.definition,
-            page=matching_chunk.page if matching_chunk else None,
-            section_title=matching_chunk.heading if matching_chunk else "",
-            source_type=matching_chunk.source_type if matching_chunk else "narrative",
-            sponsor_term=v.sponsor_term or v.variable_name,
-            canonical_term=v.variable_name,
-            retrieval_score=matching_chunk.retrieval_score if matching_chunk else None,
-            rerank_score=matching_chunk.rerank_score if matching_chunk else None,
-            llm_confidence=v.confidence, explicit=v.explicit,
-        ))
-        per_candidate_meta[candidate_id] = {
-            "time_period": v.time_period, "variable_name": v.variable_name,
-            "label": v.label, "values": v.values,
-            "code_lists_group": v.code_lists_group,
-            "additional_notes": v.additional_notes,
-        }
-
-    pack = EvidencePack(
-        protocol_id=protocol_id, concept=CONCEPT, candidates=candidates,
-        contradictions_found=extraction.contradictions_found,
-        contradiction_detail=extraction.contradiction_detail,
-        overall_confidence=extraction.overall_confidence,
-        concept_metadata={
-            "per_candidate": per_candidate_meta,
-            "unmapped_variables": [
-                {"variable_name": v.variable_name, "label": v.label,
-                 "definition": v.definition, "confidence": v.confidence}
-                for v in unmapped_variables
-            ],
-        },
-        low_retrieval_signal=len(chunks) < 3,
-        adjudicator_used=used_adjudicator,
-        requires_human_selection=True,
-        finder_version=FINDER_VERSION, model_used=model_used,
-        prompt_version=PROMPT_VERSION,
-    )
-
-    print(f"[DemographicsFinder] Done. {len(candidates)} variables | "
-          f"confidence={extraction.overall_confidence:.2f}")
-    return pack

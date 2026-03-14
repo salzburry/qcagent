@@ -230,20 +230,3 @@ class LocalModelClient:
         )
         return response.choices[0].message.content
 
-
-# ── vLLM startup helper ───────────────────────────────────────────────────────
-
-VLLM_START_COMMAND = """
-# A100 40GB — Qwen3-14B
-vllm serve Qwen/Qwen3-14B \\
-    --host 0.0.0.0 \\
-    --port 8000 \\
-    --max-model-len 16384 \\
-    --enable-prefix-caching \\
-    --dtype auto \\
-    --gpu-memory-utilization 0.95 \\
-    --enforce-eager
-"""
-
-def print_startup_instructions():
-    print(VLLM_START_COMMAND)

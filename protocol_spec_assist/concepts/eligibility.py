@@ -18,10 +18,10 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
+from .base import build_context, compute_low_signal
 
 FINDER_VERSION = "0.4.0"
 PROMPT_VERSION = "0.4.0"
-CONFIDENCE_THRESHOLD = 0.65
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -209,7 +209,7 @@ def find_inclusion_criteria(
         )
 
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_INC)
-    context = _build_context(chunks, ta_warning, protocol_id)
+    context = build_context(chunks, ta_warning, protocol_id)
 
     pack = _two_pass_extract(
         concept=CONCEPT_INC,
@@ -268,7 +268,7 @@ def find_exclusion_criteria(
         )
 
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_EXC)
-    context = _build_context(chunks, ta_warning, protocol_id)
+    context = build_context(chunks, ta_warning, protocol_id)
 
     pack = _two_pass_extract(
         concept=CONCEPT_EXC,
@@ -340,7 +340,7 @@ def _two_pass_extract(
             # Fall back to top-5 chunks
             focused_chunks = chunks[:5]
 
-        focused_context = _build_context(focused_chunks, ta_warning, protocol_id)
+        focused_context = build_context(focused_chunks, ta_warning, protocol_id)
 
         detail_prompt = SYSTEM_PROMPT_DETAIL.format(
             criterion_label=stub.criterion_label,
@@ -394,10 +394,6 @@ def _two_pass_extract(
             "lookback_window": detail.lookback_window,
         }
 
-    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
-    if chunks and chunks[0].rerank_score is not None:
-        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
-
     pack = EvidencePack(
         protocol_id=protocol_id,
         concept=concept,
@@ -405,7 +401,7 @@ def _two_pass_extract(
         contradictions_found=inventory.contradictions_found,
         contradiction_detail=inventory.contradiction_detail,
         overall_confidence=inventory.overall_confidence,
-        low_retrieval_signal=low_signal,
+        low_retrieval_signal=compute_low_signal(chunks),
         adjudicator_used=False,
         requires_human_selection=True,
         finder_version=FINDER_VERSION,
@@ -439,19 +435,3 @@ def _get_chunk_neighborhood(
     return [ch for ch in chunks if ch.chunk_id == target_chunk_id] or chunks[:3]
 
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], protocol_id: str) -> str:
-    parts = [f"Protocol ID: {protocol_id}"]
-    if ta_warning:
-        parts.append(f"\nTA PACK WARNING: {ta_warning}\n")
-    for c in chunks:
-        parts.append(
-            f"[chunk_id={c.chunk_id} | Section: {c.heading} | Type: {c.source_type} | "
-            f"Page: {c.page} | Score: {c.score:.2f}]\n{c.text}"
-        )
-    return "\n\n---\n\n".join(parts)
-
-
-LOW_RETRIEVAL_THRESHOLD = 3
-RERANK_SCORE_FLOOR = 0.2

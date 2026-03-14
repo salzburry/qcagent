@@ -20,10 +20,10 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
+from .base import CONFIDENCE_THRESHOLD, build_context, compute_low_signal, try_adjudicator
 
 FINDER_VERSION = "0.4.0"
 PROMPT_VERSION = "0.4.0"
-CONFIDENCE_THRESHOLD = 0.65
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -184,7 +184,7 @@ def find_data_prep_dates(
         )
 
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_SP)
-    context = _build_context(chunks, ta_warning, protocol_id)
+    context = build_context(chunks, ta_warning, protocol_id)
 
     result = client.extract(
         system_prompt=SYSTEM_PROMPT_DP,
@@ -195,20 +195,12 @@ def find_data_prep_dates(
     )
     extraction, model_used = result.parsed, result.model_used
 
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_DP,
-                user_prompt=context,
-                schema=DataPrepExtraction,
-                use_adjudicator=True,
-                prompt_version=PROMPT_VERSION,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[DataPrepFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+    adj_extraction, adj_model, used_adjudicator = try_adjudicator(
+        client, SYSTEM_PROMPT_DP, context, DataPrepExtraction,
+        extraction, PROMPT_VERSION, "DataPrepFinder",
+    )
+    if used_adjudicator:
+        extraction, model_used = adj_extraction, adj_model
 
     pack = _build_data_prep_pack(protocol_id, extraction, chunks, model_used, used_adjudicator)
 
@@ -298,10 +290,6 @@ def _build_data_prep_pack(
             "definition": tp.definition,
         }
 
-    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
-    if chunks and chunks[0].rerank_score is not None:
-        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
-
     pack = EvidencePack(
         protocol_id=protocol_id,
         concept=CONCEPT_SP,  # keep "study_period" as concept name for backward compat
@@ -309,7 +297,7 @@ def _build_data_prep_pack(
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
-        low_retrieval_signal=low_signal,
+        low_retrieval_signal=compute_low_signal(chunks),
         adjudicator_used=adjudicator_used,
         requires_human_selection=True,
         finder_version=FINDER_VERSION,
@@ -424,7 +412,7 @@ def find_censoring_rules(
         )
 
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_CR)
-    context = _build_context(chunks, ta_warning, protocol_id)
+    context = build_context(chunks, ta_warning, protocol_id)
 
     result = client.extract(
         system_prompt=SYSTEM_PROMPT_CR,
@@ -435,20 +423,12 @@ def find_censoring_rules(
     )
     extraction, model_used = result.parsed, result.model_used
 
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_CR,
-                user_prompt=context,
-                schema=CensoringRulesExtraction,
-                use_adjudicator=True,
-                prompt_version=PROMPT_VERSION,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[CensoringRulesFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+    adj_extraction, adj_model, used_adjudicator = try_adjudicator(
+        client, SYSTEM_PROMPT_CR, context, CensoringRulesExtraction,
+        extraction, PROMPT_VERSION, "CensoringRulesFinder",
+    )
+    if used_adjudicator:
+        extraction, model_used = adj_extraction, adj_model
 
     pack = _build_censoring_pack(
         protocol_id, extraction, chunks, model_used, used_adjudicator,
@@ -461,22 +441,6 @@ def find_censoring_rules(
     return pack
 
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], protocol_id: str) -> str:
-    parts = [f"Protocol ID: {protocol_id}"]
-    if ta_warning:
-        parts.append(f"\nTA PACK WARNING: {ta_warning}\n")
-    for c in chunks:
-        parts.append(
-            f"[chunk_id={c.chunk_id} | Section: {c.heading} | Type: {c.source_type} | "
-            f"Page: {c.page} | Score: {c.score:.2f}]\n{c.text}"
-        )
-    return "\n\n---\n\n".join(parts)
-
-
-LOW_RETRIEVAL_THRESHOLD = 3
-RERANK_SCORE_FLOOR = 0.2
 
 
 def _build_censoring_pack(
@@ -508,10 +472,6 @@ def _build_censoring_pack(
             explicit=c.explicit,
         ))
 
-    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
-    if chunks and chunks[0].rerank_score is not None:
-        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
-
     pack = EvidencePack(
         protocol_id=protocol_id,
         concept=CONCEPT_CR,
@@ -519,7 +479,7 @@ def _build_censoring_pack(
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
-        low_retrieval_signal=low_signal,
+        low_retrieval_signal=compute_low_signal(chunks),
         adjudicator_used=adjudicator_used,
         requires_human_selection=True,
         finder_version=FINDER_VERSION,

@@ -8,20 +8,18 @@ LDH, lymphocytes, etc. — each with Present/N/Date/Value sub-variables.
 """
 
 from __future__ import annotations
-import hashlib
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
-from ..retrieval.search import ProtocolIndex, RetrievedChunk
+from ..schemas.evidence import EvidencePack, ExplicitType
+from ..retrieval.search import ProtocolIndex
 from ..serving.model_client import LocalModelClient
-from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
-from ..data_sources.registry import resolve_static_template
+from ..ta_packs.loader import TAPack
+from .base import run_template_finder, build_static_only_pack as _base_static
 
 CONCEPT = "lab_variables"
 FINDER_VERSION = "0.3.0"
 PROMPT_VERSION = "0.3.0"
-CONFIDENCE_THRESHOLD = 0.65
 
 # ── Static variable template ─────────────────────────────────────────────────
 # Each lab test follows the 4-variable pattern: presence, presence-N, date, value.
@@ -81,24 +79,10 @@ Lab variables typically follow a 4-variable pattern per lab test:
 3. Date variable (e.g. LABNEUDT) — date of record closest to index
 4. Value variable (e.g. LABNEUV) — standardized test value closest to index
 
-Common lab tests in RWE studies:
-- Neutrophils / ANC (LABNEU) — absolute_neutrophil_count_anc
-- Platelets (LABPLA) — platelet_count
-- Hemoglobin (LABHEM) — hemoglobin
-- Serum creatinine (LABCRE) — creatinine
-- Bilirubin (LABBIL) — total_bilirubin
-- AST (LABAST) — aspartate_aminotransferase_ast
-- ALT (LABALT) — alanine_aminotransferase_alt
-- Alkaline phosphatase (LABALP) — alkaline_phosphatase
-- Albumin (LABALB) — albumin
-- LDH (LABLDH) — lactate_dehydrogenase
-- Lymphocytes (LABLYM) — absolute_lymphocyte_count_alc
-- WBC (LABWBC) — white_blood_cell_count
-
 For each variable, define:
 - How to determine presence (assessed='true' AND at least one of timedelta fields not missing AND quantitative_result not missing)
 - How to select the closest record to index date
-- Unit standardization (which COTA R function / target units)
+- Unit standardization (which function / target units)
 - Whether to take lowest or highest value when multiple records on same date
 
 Rules:
@@ -109,82 +93,14 @@ Rules:
 - Return chunk_id for provenance.
 - Respond ONLY with valid JSON."""
 
-
-def _build_user_prompt(chunks, ta_warning, protocol_id):
-    context_parts = []
-    for chunk in chunks:
-        context_parts.append(
-            f"[chunk_id={chunk.chunk_id} | Section: {chunk.heading} | "
-            f"Type: {chunk.source_type} | Page: {chunk.page} | "
-            f"Score: {chunk.score:.2f}]\n{chunk.text}"
-        )
-    context = "\n\n---\n\n".join(context_parts)
-    warning_block = f"\nTA PACK WARNING: {ta_warning}\n" if ta_warning else ""
-    return f"""Protocol ID: {protocol_id}
-{warning_block}
-Extract all laboratory variable definitions from the following protocol text.
-
-{context}"""
+BASE_QUERY = (
+    "laboratory lab values baseline labs neutrophil platelet hemoglobin creatinine "
+    "bilirubin AST ALT alkaline phosphatase albumin LDH lymphocyte lab test"
+)
 
 
-def _merge_with_static_template(extraction_variables, static_template):
-    """Merge LLM-extracted variables with the static template."""
-    llm_by_name = {v.variable_name.upper(): v for v in extraction_variables}
-    VarClass = LabVariablesExtraction.VariableExtraction
-    merged = []
-    used_names = set()
-    for tmpl in static_template:
-        name = tmpl["variable_name"].upper()
-        used_names.add(name)
-        if name in llm_by_name:
-            merged.append(llm_by_name[name])
-        else:
-            merged.append(VarClass(
-                chunk_id=None, time_period=tmpl["time_period"],
-                variable_name=tmpl["variable_name"], label=tmpl["label"],
-                values=tmpl["values"], definition=tmpl["definition"],
-                code_lists_group=tmpl.get("code_lists_group", ""),
-                additional_notes=tmpl.get("additional_notes", ""),
-                sponsor_term=None, explicit="inferred", confidence=0.5,
-                reasoning="Static template default — not confirmed in protocol text",
-            ))
-    unmapped = []
-    for v in extraction_variables:
-        if v.variable_name.upper() not in used_names:
-            unmapped.append(v)
-    return merged, unmapped
-
-
-def _build_static_only_pack(protocol_id: str, data_source: str = "generic") -> EvidencePack:
-    """Build an EvidencePack from static template alone."""
-    resolved = resolve_static_template(STATIC_TEMPLATE, data_source, CONCEPT)
-    candidates = []
-    per_candidate_meta = {}
-    for tmpl in resolved:
-        candidate_id = hashlib.sha256(
-            f"{protocol_id}:{CONCEPT}:static:{tmpl['variable_name']}:{tmpl['definition']}".encode()
-        ).hexdigest()[:12]
-        candidates.append(EvidenceCandidate(
-            candidate_id=candidate_id, chunk_id=None,
-            snippet=tmpl["definition"], page=None, section_title="",
-            source_type="narrative", sponsor_term=tmpl["variable_name"],
-            canonical_term=tmpl["variable_name"],
-            llm_confidence=0.5, explicit="inferred",
-        ))
-        per_candidate_meta[candidate_id] = {
-            "time_period": tmpl["time_period"], "variable_name": tmpl["variable_name"],
-            "label": tmpl["label"], "values": tmpl["values"],
-            "code_lists_group": tmpl.get("code_lists_group", ""),
-            "additional_notes": tmpl.get("additional_notes", ""),
-        }
-    return EvidencePack(
-        protocol_id=protocol_id, concept=CONCEPT, candidates=candidates,
-        overall_confidence=0.5,
-        concept_metadata={"per_candidate": per_candidate_meta},
-        low_retrieval_signal=True, requires_human_selection=True,
-        finder_version=FINDER_VERSION, prompt_version=PROMPT_VERSION,
-        model_used="static_template",
-    )
+def _build_static_only_pack(protocol_id, data_source="generic"):
+    return _base_static(protocol_id, CONCEPT, STATIC_TEMPLATE, data_source, FINDER_VERSION, PROMPT_VERSION)
 
 
 def find_lab_variables(
@@ -195,100 +111,14 @@ def find_lab_variables(
     data_source: str = "generic",
 ) -> EvidencePack:
     """Run the lab variables concept finder workflow."""
-
-    queries = build_query_bank(
-        "laboratory lab values baseline labs neutrophil platelet hemoglobin creatinine "
-        "bilirubin AST ALT alkaline phosphatase albumin LDH lymphocyte lab test",
-        ta_pack, CONCEPT,
-    )
-
-    priority_sections = get_section_priority(ta_pack, CONCEPT)
-    chunks = index.search(
-        query=queries[0], protocol_id=protocol_id,
-        concept_queries=queries[1:],
-        top_k_retrieve=25, top_k_rerank=10,
-        include_tables=True, priority_sections=priority_sections,
-    )
-
-    if not chunks:
-        return _build_static_only_pack(protocol_id, data_source)
-
-    ta_warning = get_hotspot_warning(ta_pack, CONCEPT)
-    user_prompt = _build_user_prompt(chunks, ta_warning, protocol_id)
-
-    result = client.extract(
-        system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt,
-        schema=LabVariablesExtraction, use_adjudicator=False,
+    return run_template_finder(
+        protocol_id, index, client, ta_pack, data_source,
+        concept=CONCEPT,
+        base_query=BASE_QUERY,
+        system_prompt=SYSTEM_PROMPT,
+        extraction_schema=LabVariablesExtraction,
+        static_template=STATIC_TEMPLATE,
+        finder_version=FINDER_VERSION,
         prompt_version=PROMPT_VERSION,
+        finder_name="LabVarsFinder",
     )
-    extraction, model_used = result.parsed, result.model_used
-
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt,
-                schema=LabVariablesExtraction, use_adjudicator=True,
-                prompt_version=PROMPT_VERSION,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception:
-            pass
-
-    # Merge with static template
-    resolved_template = resolve_static_template(STATIC_TEMPLATE, data_source, CONCEPT)
-    merged_variables, unmapped_variables = _merge_with_static_template(extraction.variables, resolved_template)
-
-    chunk_by_id = {ch.chunk_id: ch for ch in chunks if ch.chunk_id}
-    candidates = []
-    per_candidate_meta = {}
-
-    for v in merged_variables:
-        matching_chunk = chunk_by_id.get(v.chunk_id) if v.chunk_id else None
-        candidate_id = hashlib.sha256(
-            f"{protocol_id}:{CONCEPT}:{v.chunk_id or ''}:{v.variable_name}:{v.definition}".encode()
-        ).hexdigest()[:12]
-
-        candidates.append(EvidenceCandidate(
-            candidate_id=candidate_id, chunk_id=v.chunk_id,
-            snippet=v.definition,
-            page=matching_chunk.page if matching_chunk else None,
-            section_title=matching_chunk.heading if matching_chunk else "",
-            source_type=matching_chunk.source_type if matching_chunk else "narrative",
-            sponsor_term=v.sponsor_term or v.variable_name,
-            canonical_term=v.variable_name,
-            retrieval_score=matching_chunk.retrieval_score if matching_chunk else None,
-            rerank_score=matching_chunk.rerank_score if matching_chunk else None,
-            llm_confidence=v.confidence, explicit=v.explicit,
-        ))
-        per_candidate_meta[candidate_id] = {
-            "time_period": v.time_period, "variable_name": v.variable_name,
-            "label": v.label, "values": v.values,
-            "code_lists_group": v.code_lists_group,
-            "additional_notes": v.additional_notes,
-        }
-
-    pack = EvidencePack(
-        protocol_id=protocol_id, concept=CONCEPT, candidates=candidates,
-        contradictions_found=extraction.contradictions_found,
-        contradiction_detail=extraction.contradiction_detail,
-        overall_confidence=extraction.overall_confidence,
-        concept_metadata={
-            "per_candidate": per_candidate_meta,
-            "unmapped_variables": [
-                {"variable_name": v.variable_name, "label": v.label,
-                 "definition": v.definition, "confidence": v.confidence}
-                for v in unmapped_variables
-            ],
-        },
-        low_retrieval_signal=len(chunks) < 3,
-        adjudicator_used=used_adjudicator,
-        requires_human_selection=True,
-        finder_version=FINDER_VERSION, model_used=model_used,
-        prompt_version=PROMPT_VERSION,
-    )
-
-    print(f"[LabVarsFinder] Done. {len(candidates)} variables | "
-          f"confidence={extraction.overall_confidence:.2f}")
-    return pack

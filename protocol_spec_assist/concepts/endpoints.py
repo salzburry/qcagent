@@ -12,10 +12,10 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
+from .base import CONFIDENCE_THRESHOLD, build_context, compute_low_signal, try_adjudicator
 
 FINDER_VERSION = "0.3.0"
 PROMPT_VERSION = "0.3.0"
-CONFIDENCE_THRESHOLD = 0.65
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -91,7 +91,7 @@ def find_follow_up_end(
         )
 
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_FUE)
-    context = _build_context(chunks, ta_warning, protocol_id)
+    context = build_context(chunks, ta_warning, protocol_id)
 
     result = client.extract(
         system_prompt=SYSTEM_PROMPT_FUE,
@@ -101,19 +101,12 @@ def find_follow_up_end(
     )
     extraction, model_used = result.parsed, result.model_used
 
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_FUE,
-                user_prompt=context,
-                schema=FollowUpEndExtraction,
-                use_adjudicator=True,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[FollowUpEndFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+    adj_extraction, adj_model, used_adjudicator = try_adjudicator(
+        client, SYSTEM_PROMPT_FUE, context, FollowUpEndExtraction,
+        extraction, PROMPT_VERSION, "FollowUpEndFinder",
+    )
+    if used_adjudicator:
+        extraction, model_used = adj_extraction, adj_model
 
     # Build pack first to get stable candidate_ids, then attach metadata
     pack = _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used, used_adjudicator)
@@ -206,7 +199,7 @@ def find_primary_endpoint(
         )
 
     ta_warning = get_hotspot_warning(ta_pack, CONCEPT_PE)
-    context = _build_context(chunks, ta_warning, protocol_id)
+    context = build_context(chunks, ta_warning, protocol_id)
 
     result = client.extract(
         system_prompt=SYSTEM_PROMPT_PE,
@@ -216,19 +209,12 @@ def find_primary_endpoint(
     )
     extraction, model_used = result.parsed, result.model_used
 
-    used_adjudicator = False
-    if extraction.overall_confidence < CONFIDENCE_THRESHOLD or extraction.contradictions_found:
-        try:
-            result = client.extract(
-                system_prompt=SYSTEM_PROMPT_PE,
-                user_prompt=context,
-                schema=PrimaryEndpointExtraction,
-                use_adjudicator=True,
-            )
-            extraction, model_used = result.parsed, result.model_used
-            used_adjudicator = True
-        except Exception as e:
-            print(f"[PrimaryEndpointFinder] Adjudicator unavailable ({e}), keeping first-pass result.")
+    adj_extraction, adj_model, used_adjudicator = try_adjudicator(
+        client, SYSTEM_PROMPT_PE, context, PrimaryEndpointExtraction,
+        extraction, PROMPT_VERSION, "PrimaryEndpointFinder",
+    )
+    if used_adjudicator:
+        extraction, model_used = adj_extraction, adj_model
 
     # Build pack first to get stable candidate_ids, then attach metadata
     pack = _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used, used_adjudicator)
@@ -247,22 +233,6 @@ def find_primary_endpoint(
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
-
-def _build_context(chunks: list[RetrievedChunk], ta_warning: Optional[str], protocol_id: str) -> str:
-    parts = [f"Protocol ID: {protocol_id}"]
-    if ta_warning:
-        parts.append(f"\nTA PACK WARNING: {ta_warning}\n")
-    for i, c in enumerate(chunks, 1):
-        parts.append(
-            f"[chunk_id={c.chunk_id} | Section: {c.heading} | Type: {c.source_type} | "
-            f"Page: {c.page} | Score: {c.score:.2f}]\n{c.text}"
-        )
-    return "\n\n---\n\n".join(parts)
-
-
-LOW_RETRIEVAL_THRESHOLD = 3     # fewer chunks than this → low signal
-RERANK_SCORE_FLOOR = 0.2       # top rerank score below this → low signal
-
 
 def _build_pack(
     concept, protocol_id, extraction, chunks, model_used,
@@ -296,11 +266,6 @@ def _build_pack(
             explicit=c.explicit,
         ))
 
-    # low_retrieval_signal: few chunks OR top rerank score too low
-    low_signal = len(chunks) < LOW_RETRIEVAL_THRESHOLD
-    if chunks and chunks[0].rerank_score is not None:
-        low_signal = low_signal or chunks[0].rerank_score < RERANK_SCORE_FLOOR
-
     return EvidencePack(
         protocol_id=protocol_id,
         concept=concept,
@@ -308,7 +273,7 @@ def _build_pack(
         contradictions_found=extraction.contradictions_found,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
-        low_retrieval_signal=low_signal,
+        low_retrieval_signal=compute_low_signal(chunks),
         adjudicator_used=adjudicator_used,
         requires_human_selection=True,
         finder_version=FINDER_VERSION,
