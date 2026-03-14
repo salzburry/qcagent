@@ -33,8 +33,8 @@ class RetrievedChunk:
 def _detect_device_and_fp16() -> tuple[str, bool]:
     """Detect whether CUDA is available and set fp16 accordingly.
 
-    On single-GPU tiers (colab_a100*) or when only one GPU is present,
-    defaults to CPU so retrieval models don't compete with vLLM for VRAM.
+    Defaults to CPU on single-GPU machines so retrieval models don't
+    compete with vLLM for VRAM.
     Override with RETRIEVAL_DEVICE=cuda if you have a dedicated retrieval GPU.
     """
     import os
@@ -45,23 +45,17 @@ def _detect_device_and_fp16() -> tuple[str, bool]:
     if device_override:
         device = device_override
     else:
-        # Check if we're on a single-GPU tier where vLLM needs the full GPU
-        model_tier = os.environ.get("MODEL_TIER", "").lower()
-        if model_tier.startswith("colab"):
-            # Colab tiers share a single GPU with vLLM — force retrieval to CPU
-            device = "cpu"
-        else:
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    # If only 1 GPU, default to CPU to leave VRAM for vLLM.
-                    # With 2+ GPUs, retrieval can safely use GPU.
-                    gpu_count = torch.cuda.device_count()
-                    device = "cuda" if gpu_count > 1 else "cpu"
-                else:
-                    device = "cpu"
-            except ImportError:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # If only 1 GPU, default to CPU to leave VRAM for vLLM.
+                # With 2+ GPUs, retrieval can safely use GPU.
+                gpu_count = torch.cuda.device_count()
+                device = "cuda" if gpu_count > 1 else "cpu"
+            else:
                 device = "cpu"
+        except ImportError:
+            device = "cpu"
 
     if fp16_override:
         use_fp16 = fp16_override in ("true", "1", "yes")

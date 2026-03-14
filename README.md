@@ -84,13 +84,8 @@ are carried through to downstream consumers via `concept_metadata` on EvidencePa
 **TA packs for synonym expansion.** Not sponsor-specific — TA-level priors.
 Oncology and CV packs included. Add more as needed.
 
-**Tiered model setup.** Two supported tiers:
-- `colab_a100` — Qwen3-14B (base) on A100 40GB. Good extraction quality (~70%). Budget-friendly for Colab.
-- `h100` — Qwen3-235B-A22B-FP8 (MoE, ~22B active params) on H100 80GB. Best quality.
-  Note: BF16 weights are ~470GB (118 shards). Use the FP8 quantized variant
-  or multi-GPU tensor parallelism. See TEST_RUN_GUIDE.md for details.
-Set `MODEL_TIER=colab_a100` or `MODEL_TIER=h100` to auto-configure. Both extraction and adjudication
-run on the same server — no separate adjudicator needed.
+**Single model.** Qwen3-14B on A100 40GB via vLLM. Same model handles both
+extraction and adjudication — no separate server needed.
 
 **Model-agnostic client.** LocalModelClient uses OpenAI-compatible interface.
 Swap to GPT-4o = change env vars, zero code changes.
@@ -175,16 +170,14 @@ requirements.txt                # Dependencies with lower-bound versions
 
 ## Setup
 
-### Quick start — Colab A100 40GB
-
 ```bash
 # 1. Install
 pip install -e .
 
 # 2. Download models (Colab: saves to Google Drive)
-python colab_setup.py --download-models --tier colab_a100
+python colab_setup.py --download-models
 
-# 3. Start vLLM (auto-detects GPU, picks Qwen3-14B for 40GB)
+# 3. Start vLLM (Qwen3-14B on A100 40GB)
 python setup_vllm.py --set-env
 
 # 4. Run on a protocol
@@ -192,42 +185,16 @@ python -m protocol_spec_assist.workflows.protocol_run \
     data/protocols/PROTOCOL.pdf --ta oncology
 ```
 
-### Full setup — H100 80GB
-
-```bash
-# 1. Install
-pip install -e .
-
-# 2. Download models
-hf download Qwen/Qwen3-235B-A22B-FP8           # MoE LLM, FP8 quantized (~120 GB)
-hf download BAAI/bge-m3
-hf download BAAI/bge-reranker-v2-m3
-
-# 3. Prefetch Docling models for offline use
-python -c "from docling.utils.model_downloader import download_models; download_models()"
-
-# 4. Start vLLM server
-python setup_vllm.py --tier h100 --set-env
-
-# 5. Run on a protocol
-python -m protocol_spec_assist.workflows.protocol_run \
-    data/protocols/PROTOCOL.pdf --ta oncology --output-dir data/outputs/
-```
-
 ---
 
 ## Environment Variables
 
 ```bash
-# Easiest: set the tier and everything else auto-configures
-MODEL_TIER=colab_a100                           # colab_a100 | colab_a100_single | h100
-
-# Or override individually:
 VLLM_BASE_URL=http://localhost:8000/v1         # Default model server
 ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same server (single-model setup)
 VLLM_API_KEY=local                              # API key (default: local)
-DEFAULT_MODEL=Qwen/Qwen3-14B                   # Base extractor (or Qwen3-235B-A22B-FP8)
-ADJUDICATOR_MODEL=Qwen/Qwen3-14B              # Adjudicator
+DEFAULT_MODEL=Qwen/Qwen3-14B                   # Base extractor
+ADJUDICATOR_MODEL=Qwen/Qwen3-14B              # Adjudicator (same model)
 
 # Retrieval device control (auto-detected by default)
 RETRIEVAL_DEVICE=cpu                            # Force CPU for embeddings/reranker
@@ -263,12 +230,13 @@ Each run produces 4 artifacts in `data/outputs/`:
 
 ### Fixes
 9. **Version consistency** — all finders, schemas, and spec at v0.3.0
-10. **Default model** — upgraded to `Qwen/Qwen3-235B-A22B-FP8` MoE for H100
+10. **Default model** — Qwen3-14B on A100 40GB
 11. **HuggingFace CLI** — updated to `hf download` (was `huggingface-cli download`)
-12. **Model tiers** — `MODEL_TIER` env var for one-line GPU config (`colab_a100` / `h100`)
-13. **Colab setup** — `colab_setup.py` handles Drive mounting, model download, compute budgeting
-14. **GPU auto-detection** — `setup_vllm.py` auto-selects model based on VRAM (14B for 40GB, 235B for 80GB)
-15. **Google Drive integration** — models persist on Drive across Colab sessions (download once)
+12. **Colab setup** — `colab_setup.py` handles Drive mounting, model download, compute budgeting
+13. **GPU auto-detection** — `setup_vllm.py` detects GPU and applies workarounds
+14. **Google Drive integration** — models persist on Drive across Colab sessions (download once)
+15. **Retrieval on CPU** — embeddings/reranker default to CPU on single-GPU machines
+16. **max_tokens fix** — lowered from 16384 to 1536 to avoid context-length errors
 
 ---
 

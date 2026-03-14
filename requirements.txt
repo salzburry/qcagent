@@ -41,19 +41,14 @@ huggingface-hub>=0.20              # Model download to Google Drive
 # 1. Install vLLM:
 #    pip install vllm
 #
-# 2. Download models (pick your tier):
-#    Colab A100 40GB:
-#      python colab_setup.py --download-models --tier colab_a100
-#    H100 80GB:
-#      hf download Qwen/Qwen3-235B-A22B-FP8           # MoE FP8 (~120 GB)
-#    Both tiers:
-#      hf download BAAI/bge-m3
-#      hf download BAAI/bge-reranker-v2-m3
+# 2. Download models:
+#    python colab_setup.py --download-models        # Colab (saves to Drive)
+#    hf download Qwen/Qwen3-14B                     # ~28 GB
+#    hf download BAAI/bge-m3
+#    hf download BAAI/bge-reranker-v2-m3
 #
-# 3. Start vLLM server (auto-detects GPU and picks model):
+# 3. Start vLLM server:
 #    python setup_vllm.py --set-env
-#    Or with explicit tier:
-#    python setup_vllm.py --tier colab_a100 --set-env
 #
 # 4. Laptop alternative (if vLLM too heavy):
 #    ollama pull qwen3:14b
