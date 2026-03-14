@@ -69,6 +69,7 @@ class DemographicsExtraction(BaseModel):
         confidence: float = Field(ge=0.0, le=1.0)
 
     variables: list[VariableExtraction] = Field(
+        default_factory=list,
         description="All demographic variables found in protocol, each as a row definition"
     )
     contradictions_found: bool = False

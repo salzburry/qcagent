@@ -45,9 +45,15 @@ Protocol PDF
       1. Build query bank (base query + TA pack synonyms)
       2. Hybrid retrieval (dense + sparse + RRF fusion)
       3. BGE reranker
-      4. vLLM structured output → EvidencePack (schema-constrained)
+      4. Two-pass LLM extraction:
+         Pass 1: Free reasoning (unconstrained — model analyzes protocol)
+         Pass 2: Schema-constrained normalization (formats into JSON)
       5. Confidence router → adjudicator model if needed
-      6. Return EvidencePack with chunk_id provenance
+      6. Evidence auditor → verifies quotes against cited chunks (hard concepts only)
+      7. Deterministic merger → accept/reject/repair per candidate
+      8. Return EvidencePack with chunk_id provenance
+    │
+    Non-fatal: if any finder crashes, pipeline continues with empty pack
     │
     ▼
 [EvidencePacks]
@@ -114,11 +120,31 @@ and `anyOf` (for Optional fields). vLLM's xgrammar backend silently mishandles t
 producing empty/garbage output instead of raising errors. `_flatten_schema()` inlines
 all references and simplifies nullable unions before sending to vLLM via `guided_json`.
 
-**Chain-of-thought before constraints.** All extraction schemas place a `chain_of_thought`
-field as the FIRST field, and `reasoning` as the first field in nested sub-models.
-This follows the "Think Before Constraining" approach (arXiv:2601.07525) — letting the
-model reason freely before committing to structured fields improves accuracy by up to 27%
-on constrained decoding tasks with smaller models.
+**Two-pass extraction (think before constraining).** Extraction uses two LLM calls:
+Pass 1 is unconstrained — the model reasons freely about the protocol text.
+Pass 2 is schema-constrained — normalizes the reasoning into strict JSON.
+This separates reasoning from formatting, which literature shows improves accuracy
+for complex schemas on local models. Falls back to single-pass if Pass 1 fails.
+
+**Qwen3 thinking disabled.** `chat_template_kwargs={"enable_thinking": False}` is sent
+on all vLLM calls. Qwen3 thinks by default, and `<think>` blocks interfere with
+guided_json constrained decoding.
+
+**All schema fields have defaults.** Every list field uses `default_factory=list`, every
+bool defaults to `False`. No field in any schema can cause a validation crash from omission.
+The `required` key is also stripped from the flattened schema sent to vLLM.
+
+**Author → Auditor → Merger for hard concepts.** The 8 high-value concepts (index_date,
+follow_up_end, primary_endpoint, study_period, censoring_rules, cohort_definitions,
+eligibility_inclusion, eligibility_exclusion) get a three-stage pipeline:
+1. Author (existing extractor) generates candidates
+2. Auditor (second LLM call, flat schema) verifies each candidate against cited text
+3. Merger (deterministic, no LLM) accepts/rejects/repairs — never fabricates consensus
+Template-based finders (demographics, labs, etc.) skip the auditor.
+
+**Non-fatal concept finders.** If any concept finder crashes, the pipeline continues
+with an empty EvidencePack for that concept. A single finder failure never kills the
+entire 14-concept run.
 
 **Outlines guided decoding.** vLLM is configured with outlines as the guided decoding
 backend instead of the default xgrammar. Outlines has broader JSON schema coverage per
@@ -196,6 +222,7 @@ protocol_spec_assist/
 │
 ├── concepts/
 │   ├── __init__.py
+│   ├── base.py                 # Shared utilities, constants, audit_and_merge()
 │   ├── index_date.py           # Index date finder
 │   ├── endpoints.py            # follow_up_end + primary_endpoint
 │   ├── eligibility.py          # Two-pass: inventory → per-criterion detail
@@ -206,7 +233,9 @@ protocol_spec_assist/
 │   ├── lab_variables.py
 │   ├── treatment_variables.py
 │   ├── cohort_definitions.py   # Section B: treatment arms, comparators, analysis populations
-│   └── source_data_prep.py     # Section D: protocol + source-known data prep issues
+│   ├── source_data_prep.py     # Section D: protocol + source-known data prep issues
+│   ├── evidence_auditor.py     # Verifies candidates against cited chunks (accept/reject/repair)
+│   └── evidence_merger.py      # Deterministic merge: author + auditor → final candidates
 │
 ├── row_completion/
 │   ├── __init__.py
@@ -233,16 +262,9 @@ protocol_spec_assist/
 │   ├── __init__.py
 │   └── protocol_run.py         # Prefect flow — wires everything together
 │
-├── ui/                         # Planned — Streamlit review app
-│   └── __init__.py
-│
 ├── serving/
 │   ├── __init__.py
-│   └── model_client.py         # vLLM client (OpenAI-compatible, per-call max_tokens)
-│
-├── eval/
-│   ├── __init__.py
-│   └── harness.py              # Gold set + evaluation harness
+│   └── model_client.py         # vLLM client (two-pass extraction, thinking disabled)
 │
 data/
 ├── protocols/                  # Drop PDFs here
@@ -251,7 +273,6 @@ data/
 └── outputs/                    # EvidencePack JSON + spec outputs
 
 pyproject.toml                  # Package config — pip install -e .
-requirements.txt                # Dependencies with lower-bound versions
 ```
 
 ---
@@ -717,20 +738,20 @@ Step 1: Parse protocol        — Multi-strategy pipeline (Docling, Docling+OCR,
          ├── Quality scoring  — grades each strategy: pass / warn / fail
          └── FAIL gate        — if all strategies fail, stops here with shell spec + QC warning
 Step 2: Index protocol        — BGE-M3 embeds chunks, Qdrant indexes (~20-60s)
-Step 3: Find concepts         — 14 concept finders run sequentially:
-        ├── index_date
-        ├── follow_up_end
-        ├── primary_endpoint
-        ├── eligibility_inclusion   (two-pass: inventory → detail)
-        ├── eligibility_exclusion   (two-pass: inventory → detail)
-        ├── study_period            (two-pass: regex mining → LLM classification)
-        ├── censoring_rules
-        ├── demographics
-        ├── clinical_characteristics
-        ├── biomarkers
-        ├── lab_variables
-        ├── treatment_variables
-        ├── cohort_definitions      (Section B: arms, comparators, populations)
+Step 3: Find concepts         — 14 concept finders run sequentially (non-fatal):
+        ├── index_date              ← audited (author → auditor → merger)
+        ├── follow_up_end           ← audited
+        ├── primary_endpoint        ← audited
+        ├── eligibility_inclusion   ← audited (two-pass: inventory → detail)
+        ├── eligibility_exclusion   ← audited (two-pass: inventory → detail)
+        ├── study_period            ← audited (two-pass: regex mining → LLM classify)
+        ├── censoring_rules         ← audited
+        ├── cohort_definitions      ← audited (Section B: arms, comparators)
+        ├── demographics            (template-based, no auditor)
+        ├── clinical_characteristics (template-based)
+        ├── biomarkers              (template-based)
+        ├── lab_variables           (template-based)
+        ├── treatment_variables     (template-based)
         └── source_data_prep        (Section D: protocol + source-known issues)
 Step 4: Pre-review QC         — deterministic rule checks (12 rules)
 Step 5: Save evidence packs   — JSON output

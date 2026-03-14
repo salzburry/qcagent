@@ -20,7 +20,7 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
-from .base import build_context, compute_low_signal, try_adjudicator
+from .base import build_context, compute_low_signal, try_adjudicator, audit_and_merge
 
 CONCEPT = "index_date"
 FINDER_VERSION = "0.3.0"
@@ -54,9 +54,11 @@ class IndexDateExtraction(BaseModel):
         "Identify key phrases, assess whether they are explicit or inferred, and note any contradictions."
     )
     candidates: list[CandidateExtraction] = Field(
+        default_factory=list,
         description="All candidate index date definitions found, ranked by confidence"
     )
     contradictions_found: bool = Field(
+        default=False,
         description="True if different sections give conflicting index date definitions"
     )
     contradiction_detail: Optional[str] = Field(
@@ -184,11 +186,20 @@ def find_index_date(
             explicit=c.explicit,
         ))
 
+    # Step 7: Author → Auditor → Merger (localized evidence audit)
+    audited_candidates, audit_contradictions, auditor_notes = audit_and_merge(
+        client=client,
+        candidates=candidates,
+        extraction_candidates=extraction.candidates,
+        chunks_text=user_prompt,
+        concept=CONCEPT,
+    )
+
     pack = EvidencePack(
         protocol_id=protocol_id,
         concept=CONCEPT,
-        candidates=candidates,
-        contradictions_found=extraction.contradictions_found,
+        candidates=audited_candidates,
+        contradictions_found=extraction.contradictions_found or audit_contradictions,
         contradiction_detail=extraction.contradiction_detail,
         overall_confidence=extraction.overall_confidence,
         low_retrieval_signal=compute_low_signal(chunks),
@@ -197,11 +208,14 @@ def find_index_date(
         finder_version=FINDER_VERSION,
         model_used=model_used,
         prompt_version=PROMPT_VERSION,
+        concept_metadata={
+            "auditor_notes": auditor_notes,
+        } if auditor_notes else None,
     )
 
     print(f"[IndexDateFinder] Done. "
-          f"{len(candidates)} candidates | "
+          f"{len(audited_candidates)} candidates (from {len(candidates)} authored) | "
           f"confidence={extraction.overall_confidence:.2f} | "
-          f"contradictions={extraction.contradictions_found}")
+          f"contradictions={extraction.contradictions_found or audit_contradictions}")
 
     return pack

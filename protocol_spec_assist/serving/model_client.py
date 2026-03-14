@@ -16,7 +16,7 @@ import time
 import logging
 from typing import Optional, Type, TypeVar
 from dataclasses import dataclass, field
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -135,6 +135,100 @@ def _flatten_schema(schema: dict) -> dict:
     return result
 
 
+def _generate_example(schema: Type[BaseModel]) -> str:
+    """Generate a minimal JSON example from a Pydantic schema.
+
+    This gives the model a concrete reference for exact field names and types,
+    preventing the #1 failure mode: wrong/hallucinated field names.
+    """
+    def _example_value(field_name: str, field_info) -> object:
+        annotation = field_info.annotation
+        if annotation is None:
+            return None
+
+        # Handle Optional (typing.Optional[X] -> X | None)
+        origin = getattr(annotation, "__origin__", None)
+        args = getattr(annotation, "__args__", ())
+
+        # Optional[X] shows as Union[X, None]
+        import typing
+        if origin is typing.Union and type(None) in args:
+            non_none = [a for a in args if a is not type(None)]
+            if non_none:
+                annotation = non_none[0]
+                origin = getattr(annotation, "__origin__", None)
+                args = getattr(annotation, "__args__", ())
+
+        # list[X] -> one example item
+        if origin is list:
+            item_type = args[0] if args else str
+            if isinstance(item_type, type) and issubclass(item_type, BaseModel):
+                return [_example_model(item_type)]
+            elif item_type is str:
+                return ["..."]
+            else:
+                return ["..."]
+
+        # Nested BaseModel
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return _example_model(annotation)
+
+        # Literal
+        if origin is typing.Literal:
+            return args[0] if args else "..."
+
+        # Primitives
+        if annotation is str:
+            return "..."
+        elif annotation is bool:
+            return False
+        elif annotation is float:
+            return 0.0
+        elif annotation is int:
+            return 0
+
+        return "..."
+
+    def _example_model(model: Type[BaseModel]) -> dict:
+        result = {}
+        for fname, finfo in model.model_fields.items():
+            result[fname] = _example_value(fname, finfo)
+        return result
+
+    example = _example_model(schema)
+    return json.dumps(example, indent=2)
+
+
+def _fill_missing_defaults(data: dict, schema: Type[BaseModel]) -> dict:
+    """Fill missing required fields with type-appropriate defaults.
+
+    vLLM's xgrammar backend doesn't enforce 'required' fields in JSON schemas,
+    so the model may omit them. Rather than adding explicit defaults to every
+    field in every schema, we infer safe defaults from the field types:
+        str -> "", bool -> False, float/int -> 0, list -> [], Optional -> None
+    """
+    for field_name, field_info in schema.model_fields.items():
+        if field_name in data:
+            continue
+        # Has an explicit default — Pydantic will handle it
+        if field_info.default is not None:
+            continue
+        # Infer default from annotation
+        annotation = field_info.annotation
+        if annotation is str:
+            data[field_name] = ""
+        elif annotation is bool:
+            data[field_name] = False
+        elif annotation is float:
+            data[field_name] = 0.0
+        elif annotation is int:
+            data[field_name] = 0
+        elif hasattr(annotation, "__origin__") and annotation.__origin__ is list:
+            data[field_name] = []
+        # Otherwise leave it for Pydantic to error on (truly unknown type)
+    return data
+
+
 # ── Extraction result with raw response ──────────────────────────────────────
 
 @dataclass
@@ -231,19 +325,129 @@ class LocalModelClient:
         raw_schema = schema.model_json_schema()
         flat_schema = _flatten_schema(raw_schema)
 
+        # Drop 'required' from flattened schema — all fields have defaults now,
+        # and removing it prevents xgrammar/outlines from fighting the model
+        # over field presence, which is the #1 cause of schema failures.
+        flat_schema.pop("required", None)
+
+        # Generate a minimal JSON example so the model sees exact field names
+        example_json = _generate_example(schema)
+
+        # Log flattened schema on first call for diagnostics
+        if not hasattr(self, "_logged_schemas"):
+            self._logged_schemas = set()
+        schema_name = schema.__name__
+        if schema_name not in self._logged_schemas:
+            self._logged_schemas.add(schema_name)
+            logger.info(
+                f"[extract] Schema '{schema_name}' flattened for guided_json "
+                f"({len(json.dumps(flat_schema))} chars)"
+            )
+
+        # ── Two-pass extraction ──────────────────────────────────────────
+        # Pass 1: Unconstrained reasoning — let the model think freely
+        # Pass 2: Schema-constrained normalization — format into JSON
+        # This separates reasoning from formatting (arXiv: "think before
+        # constraining") and dramatically improves accuracy for complex schemas.
+
+        # Pass 1: Free reasoning draft
+        draft_prompt = (
+            f"{system_prompt}\n\n"
+            f"First, analyze the protocol text and list your findings as bullet points. "
+            f"For each finding, include:\n"
+            f"- The exact quoted text from the protocol\n"
+            f"- Which chunk_id it came from\n"
+            f"- Whether it is explicit or inferred\n"
+            f"- Your confidence (0-1)\n"
+            f"- Any contradictions between sections\n\n"
+            f"Be thorough. List ALL relevant findings."
+        )
+
+        try:
+            draft_response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": draft_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=self.config.temperature,
+                max_tokens=tokens,
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+            )
+            draft_text = draft_response.choices[0].message.content or ""
+            # Strip any <think> blocks from draft too
+            draft_text = re.sub(r"<think>.*?</think>\s*", "", draft_text, flags=re.DOTALL).strip()
+            logger.info(
+                f"[extract] Pass 1 draft for {schema_name}: {len(draft_text)} chars"
+            )
+        except Exception as e:
+            logger.warning(f"[extract] Pass 1 draft failed ({e}), proceeding with single-pass")
+            draft_text = ""
+
+        # Pass 2: Schema-constrained normalization
+        normalize_system = (
+            f"Convert the analysis below into a JSON object matching the required schema.\n\n"
+            f"## REQUIRED OUTPUT FORMAT\n"
+            f"Your response must be a JSON object with EXACTLY these field names:\n"
+            f"```json\n{example_json}\n```\n\n"
+            f"Rules:\n"
+            f"- Use ONLY the field names shown above — do not invent new ones.\n"
+            f"- Fill in real values from the analysis and protocol text.\n"
+            f"- If no findings, return empty lists.\n"
+            f"- Respond with valid JSON only, no markdown fences."
+        )
+
+        if draft_text:
+            normalize_user = (
+                f"## ANALYSIS\n{draft_text}\n\n"
+                f"## ORIGINAL PROTOCOL TEXT\n{user_prompt}\n\n"
+                f"Now convert the analysis into the required JSON format."
+            )
+        else:
+            # Fallback to single-pass if draft failed
+            normalize_user = user_prompt
+            normalize_system = (
+                f"{system_prompt}\n\n"
+                f"## REQUIRED OUTPUT FORMAT\n"
+                f"Your response must be a JSON object with EXACTLY these field names.\n"
+                f"Example structure (fill in real values from the protocol):\n"
+                f"```json\n{example_json}\n```"
+            )
+
         last_error = None
+        last_raw = None
         for attempt in range(1 + self.config.max_retries):
             try:
+                # On retry after validation error, add self-healing context
+                messages = [
+                    {"role": "system", "content": normalize_system},
+                    {"role": "user", "content": normalize_user},
+                ]
+                if attempt > 0 and last_raw and last_error:
+                    messages.append({
+                        "role": "assistant",
+                        "content": last_raw,
+                    })
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Your JSON had validation errors:\n{last_error}\n\n"
+                            f"Fix the JSON to match the required schema exactly. "
+                            f"Use EXACTLY these top-level fields: "
+                            f"{list(schema.model_fields.keys())}"
+                        ),
+                    })
+
                 response = client.chat.completions.create(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+                    messages=messages,
                     temperature=self.config.temperature,
                     max_tokens=tokens,
                     extra_body={
                         "guided_json": flat_schema,
+                        "chat_template_kwargs": {"enable_thinking": False},
                     },
                 )
 
@@ -251,11 +455,8 @@ class LocalModelClient:
                 raw = choice.message.content
 
                 # Strip <think>...</think> blocks (Qwen3 reasoning traces)
-                think_text = ""
+                # Even with enable_thinking=False, some vLLM versions still emit them
                 if raw and "<think>" in raw:
-                    think_match = re.search(r"<think>(.*?)</think>", raw, flags=re.DOTALL)
-                    if think_match:
-                        think_text = think_match.group(1).strip()
                     raw = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
 
                 if not raw or not raw.strip():
@@ -268,11 +469,21 @@ class LocalModelClient:
                         f"{len(raw)} chars). Increase max_tokens."
                     )
 
-                parsed = schema.model_validate_json(raw)
+                # Fill missing required fields with type-appropriate defaults
+                # before validation — belt-and-suspenders with schema defaults
+                data = json.loads(raw)
+                data = _fill_missing_defaults(data, schema)
+                parsed = schema.model_validate(data)
 
-                # Back-fill chain_of_thought from <think> block if empty
-                if think_text and hasattr(parsed, "chain_of_thought") and not parsed.chain_of_thought:
-                    parsed.chain_of_thought = think_text
+                # Back-fill chain_of_thought from draft if empty
+                if draft_text and hasattr(parsed, "chain_of_thought") and not parsed.chain_of_thought:
+                    parsed.chain_of_thought = draft_text[:2000]
+
+                if attempt > 0:
+                    logger.info(
+                        f"[extract] Self-healed on attempt {attempt + 1} for {schema_name}"
+                    )
+
                 return ExtractionResult(
                     parsed=parsed,
                     model_used=model,
@@ -280,9 +491,10 @@ class LocalModelClient:
                     prompt_version=prompt_version,
                 )
 
-            except (ValueError, json.JSONDecodeError) as e:
-                # Malformed JSON or empty content — retry
+            except (ValueError, json.JSONDecodeError, ValidationError) as e:
+                # Malformed JSON or validation error — retry with error feedback
                 last_error = e
+                last_raw = locals().get("raw")
                 logger.warning(
                     f"[extract] Attempt {attempt + 1}: parse error: {e}"
                 )

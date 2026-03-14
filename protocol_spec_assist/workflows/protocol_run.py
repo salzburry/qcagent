@@ -96,9 +96,31 @@ def _run_concept_finder(
     ta_pack,
     **kwargs,
 ) -> dict:
-    """Run a concept finder and return serialized EvidencePack."""
-    pack = finder_fn(protocol_id, index, client, ta_pack, **kwargs)
-    return pack.model_dump()
+    """Run a concept finder and return serialized EvidencePack.
+
+    Non-fatal: if extraction fails, returns an empty EvidencePack with
+    low_retrieval_signal=True so the flow continues and remaining concepts
+    are still extracted. A single finder crash should never kill the run.
+    """
+    try:
+        pack = finder_fn(protocol_id, index, client, ta_pack, **kwargs)
+        return pack.model_dump()
+    except Exception as e:
+        concept_name = getattr(finder_fn, "__name__", "unknown").replace("find_", "")
+        logger = get_run_logger()
+        logger.error(
+            f"[{concept_name}] Finder failed ({type(e).__name__}: {e}). "
+            f"Returning empty pack — flow continues."
+        )
+        fallback = EvidencePack(
+            protocol_id=protocol_id,
+            concept=concept_name,
+            candidates=[],
+            low_retrieval_signal=True,
+            finder_version="0.0.0",
+            prompt_version="0.0.0",
+        )
+        return fallback.model_dump()
 
 
 @task(name="find-index-date", cache_policy=NO_CACHE)

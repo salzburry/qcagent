@@ -18,7 +18,7 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
-from .base import build_context, compute_low_signal
+from .base import build_context, compute_low_signal, audit_and_merge
 
 FINDER_VERSION = "0.4.0"
 PROMPT_VERSION = "0.4.0"
@@ -43,7 +43,7 @@ class CriterionInventory(BaseModel):
         )
         confidence: float = Field(ge=0.0, le=1.0)
 
-    criteria: list[CriterionStub]
+    criteria: list[CriterionStub] = Field(default_factory=list)
     contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -155,8 +155,8 @@ class InclusionCriteriaExtraction(BaseModel):
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
 
-    criteria: list[CriterionExtraction]
-    contradictions_found: bool
+    criteria: list[CriterionExtraction] = Field(default_factory=list)
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -186,8 +186,8 @@ class ExclusionCriteriaExtraction(BaseModel):
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
 
-    criteria: list[CriterionExtraction]
-    contradictions_found: bool
+    criteria: list[CriterionExtraction] = Field(default_factory=list)
+    contradictions_found: bool = False
     contradiction_detail: Optional[str] = None
     overall_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
@@ -416,11 +416,16 @@ def _two_pass_extract(
             "lookback_window": detail.lookback_window,
         }
 
+    # Author → Auditor → Merger
+    audited, audit_contradictions, auditor_notes = audit_and_merge(
+        client, candidates, inventory.criteria, context, concept,
+    )
+
     pack = EvidencePack(
         protocol_id=protocol_id,
         concept=concept,
-        candidates=candidates,
-        contradictions_found=inventory.contradictions_found,
+        candidates=audited,
+        contradictions_found=inventory.contradictions_found or audit_contradictions,
         contradiction_detail=inventory.contradiction_detail,
         overall_confidence=inventory.overall_confidence,
         low_retrieval_signal=compute_low_signal(chunks),
@@ -430,6 +435,8 @@ def _two_pass_extract(
         model_used=model_used,
         prompt_version=PROMPT_VERSION,
     )
+    if auditor_notes:
+        per_candidate["_auditor_notes"] = auditor_notes
     pack.concept_metadata = {"per_candidate": per_candidate}
 
     return pack
