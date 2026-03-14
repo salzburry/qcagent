@@ -42,12 +42,12 @@ MODEL_TIERS = {
         "description": "Colab A100 40GB — Qwen3-14B only (single model, simpler)",
     },
     "h100": {
-        "default_model": "Qwen/Qwen3-235B-A22B",
-        "adjudicator_model": "Qwen/Qwen3-235B-A22B",
+        "default_model": "Qwen/Qwen3-235B-A22B-FP8",
+        "adjudicator_model": "Qwen/Qwen3-235B-A22B-FP8",
         "vision_model": "Qwen/Qwen2.5-VL-7B-Instruct",
         "max_model_len": 32768,
         "gpu_memory_utilization": 0.90,
-        "description": "H100 80GB — Qwen3-235B-A22B MoE (best quality)",
+        "description": "H100 80GB — Qwen3-235B-A22B-FP8 MoE (best quality)",
     },
 }
 
@@ -60,8 +60,9 @@ def get_tier_name() -> str:
     # If user set DEFAULT_MODEL explicitly, use custom config (no tier)
     if os.environ.get("DEFAULT_MODEL"):
         return ""
-    # Default to h100 for backwards compatibility
-    return "h100"
+    # Default to the safe Colab tier — if you have an H100, set MODEL_TIER=h100
+    # explicitly rather than silently loading a 235B model that may not fit.
+    return "colab_a100_single"
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -70,11 +71,13 @@ class ModelConfig(BaseModel):
     default_base_url: str = "http://localhost:8000/v1"
     adjudicator_base_url: str = "http://localhost:8001/v1"
     api_key: str = "local"
-    default_model: str = "Qwen/Qwen3-235B-A22B"            # MoE — fits on H100 80GB
-    adjudicator_model: str = "Qwen/Qwen3-235B-A22B"      # same model (single-server)
+    default_model: str = "Qwen/Qwen3-14B"                  # safe default (A100 40GB)
+    adjudicator_model: str = "Qwen/Qwen3-14B"            # same model (single-server)
     vision_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"    # scanned pages
     temperature: float = 0.0                              # deterministic extraction
-    max_tokens: int = 16384
+    max_tokens: int = 1536                                # conservative — avoids blowing
+                                                          # past server's max-model-len when
+                                                          # combined with a long prompt
     max_retries: int = 2                                  # retry on transient failures
     timeout: float = 120.0                                # seconds
     model_tier: str = ""                                  # resolved tier name
@@ -89,10 +92,10 @@ def get_config() -> ModelConfig:
         tier = MODEL_TIERS.get(tier_name, {})
 
         default_model = os.environ.get(
-            "DEFAULT_MODEL", tier.get("default_model", "Qwen/Qwen3-235B-A22B")
+            "DEFAULT_MODEL", tier.get("default_model", "Qwen/Qwen3-14B")
         )
         adjudicator_model = os.environ.get(
-            "ADJUDICATOR_MODEL", tier.get("adjudicator_model", "Qwen/Qwen3-235B-A22B")
+            "ADJUDICATOR_MODEL", tier.get("adjudicator_model", "Qwen/Qwen3-14B")
         )
 
         _config = ModelConfig(
@@ -299,8 +302,8 @@ vllm serve Qwen/Qwen3-14B \\
     --enforce-eager
 """,
     "h100": """
-# H100 80GB — Qwen3-235B-A22B MoE (~22B active params)
-vllm serve Qwen/Qwen3-235B-A22B \\
+# H100 80GB — Qwen3-235B-A22B-FP8 MoE (~22B active params, FP8 quantized)
+vllm serve Qwen/Qwen3-235B-A22B-FP8 \\
     --host 0.0.0.0 \\
     --port 8000 \\
     --max-model-len 32768 \\

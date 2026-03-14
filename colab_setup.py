@@ -56,7 +56,7 @@ MODELS = {
     },
     "h100": {
         "llm": [
-            {"repo": "Qwen/Qwen3-235B-A22B", "size_gb": 60, "purpose": "MoE extractor (H100)"},
+            {"repo": "Qwen/Qwen3-235B-A22B-FP8", "size_gb": 120, "purpose": "MoE extractor FP8 (H100)"},
         ],
         "support": [
             {"repo": "BAAI/bge-m3", "size_gb": 2.3, "purpose": "Embeddings"},
@@ -183,8 +183,18 @@ def print_budget_info():
 
 
 def start_vllm(tier="colab_a100", port=8000):
-    """Start vLLM server with tier-appropriate settings."""
+    """Start vLLM server with tier-appropriate settings.
+
+    If models were downloaded to Drive, passes the Drive path as --model
+    so vLLM loads from there instead of re-downloading from HuggingFace.
+    The --model flag overrides the tier's default model name (see setup_vllm.py).
+    """
     print(f"\n[colab_setup] Starting vLLM server (tier: {tier})...")
+
+    # Resolve Drive model path
+    tier_models = MODELS.get(tier, MODELS["colab_a100"])
+    llm_repo = tier_models["llm"][0]["repo"]
+    drive_model_path = os.path.join(DRIVE_MODELS, llm_repo.replace("/", "--"))
 
     cmd = [
         sys.executable, "setup_vllm.py",
@@ -192,13 +202,17 @@ def start_vllm(tier="colab_a100", port=8000):
         "--port", str(port),
         "--set-env",
     ]
-    # Pass model path from Drive if models are downloaded there
-    tier_models = MODELS.get(tier, MODELS["colab_a100"])
-    llm_repo = tier_models["llm"][0]["repo"]
-    drive_model_path = os.path.join(DRIVE_MODELS, llm_repo.replace("/", "--"))
+
+    # --model after --tier overrides the tier's default (setup_vllm.py fix)
     if os.path.isdir(drive_model_path):
         cmd.extend(["--model", drive_model_path])
         print(f"[colab_setup] Loading model from Drive: {drive_model_path}")
+    else:
+        print(f"[colab_setup] Drive model not found at {drive_model_path}")
+        print(f"[colab_setup] vLLM will download {llm_repo} from HuggingFace (slow)")
+
+    # Also set MODEL_TIER so retrieval auto-routes to CPU
+    os.environ["MODEL_TIER"] = tier
 
     os.execv(sys.executable, cmd)
 

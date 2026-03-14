@@ -86,7 +86,9 @@ Oncology and CV packs included. Add more as needed.
 
 **Tiered model setup.** Two supported tiers:
 - `colab_a100` — Qwen3-14B (base) on A100 40GB. Good extraction quality (~70%). Budget-friendly for Colab.
-- `h100` — Qwen3-235B-A22B (MoE, ~22B active params) on H100 80GB. Best quality.
+- `h100` — Qwen3-235B-A22B-FP8 (MoE, ~22B active params) on H100 80GB. Best quality.
+  Note: BF16 weights are ~470GB (118 shards). Use the FP8 quantized variant
+  or multi-GPU tensor parallelism. See TEST_RUN_GUIDE.md for details.
 Set `MODEL_TIER=colab_a100` or `MODEL_TIER=h100` to auto-configure. Both extraction and adjudication
 run on the same server — no separate adjudicator needed.
 
@@ -197,7 +199,7 @@ python -m protocol_spec_assist.workflows.protocol_run \
 pip install -e .
 
 # 2. Download models
-hf download Qwen/Qwen3-235B-A22B              # MoE LLM (~60 GB)
+hf download Qwen/Qwen3-235B-A22B-FP8           # MoE LLM, FP8 quantized (~120 GB)
 hf download BAAI/bge-m3
 hf download BAAI/bge-reranker-v2-m3
 
@@ -224,7 +226,7 @@ MODEL_TIER=colab_a100                           # colab_a100 | colab_a100_single
 VLLM_BASE_URL=http://localhost:8000/v1         # Default model server
 ADJUDICATOR_BASE_URL=http://localhost:8000/v1   # Same server (single-model setup)
 VLLM_API_KEY=local                              # API key (default: local)
-DEFAULT_MODEL=Qwen/Qwen3-14B                   # Base extractor (or Qwen3-235B-A22B)
+DEFAULT_MODEL=Qwen/Qwen3-14B                   # Base extractor (or Qwen3-235B-A22B-FP8)
 ADJUDICATOR_MODEL=Qwen/Qwen3-14B              # Adjudicator
 
 # Retrieval device control (auto-detected by default)
@@ -261,7 +263,7 @@ Each run produces 4 artifacts in `data/outputs/`:
 
 ### Fixes
 9. **Version consistency** — all finders, schemas, and spec at v0.3.0
-10. **Default model** — upgraded to `Qwen/Qwen3-235B-A22B` MoE for H100
+10. **Default model** — upgraded to `Qwen/Qwen3-235B-A22B-FP8` MoE for H100
 11. **HuggingFace CLI** — updated to `hf download` (was `huggingface-cli download`)
 12. **Model tiers** — `MODEL_TIER` env var for one-line GPU config (`colab_a100` / `h100`)
 13. **Colab setup** — `colab_setup.py` handles Drive mounting, model download, compute budgeting

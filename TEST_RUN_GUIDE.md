@@ -31,7 +31,7 @@ Works on **Google Colab**, **Databricks**, or **any Linux machine with a GPU**.
 | Tier | GPU | VRAM | Base Model | Adjudicator | Extraction Quality |
 |------|-----|------|-----------|-------------|-------------------|
 | **colab_a100** | A100 40GB | 40 GB | Qwen3-14B | Qwen3-8B | Good (~70%) |
-| **h100** | H100 80GB | 80 GB | Qwen3-235B-A22B (MoE) | Same | Excellent (100%) |
+| **h100** | H100 80GB | 80 GB | Qwen3-235B-A22B-FP8 (MoE) | Same | Excellent (100%) |
 
 | Component | Colab A100 (40GB) | H100 (80GB) |
 |-----------|-------------------|-------------|
@@ -46,12 +46,16 @@ Works on **Google Colab**, **Databricks**, or **any Linux machine with a GPU**.
 |-------|------|---------|------|
 | `Qwen/Qwen3-14B` | ~28 GB | Base extractor (Colab) | colab_a100 |
 | `Qwen/Qwen3-8B` | ~16 GB | Adjudicator (Colab) | colab_a100 |
-| `Qwen/Qwen3-235B-A22B` | ~60 GB | MoE extractor + adjudicator | h100 |
+| `Qwen/Qwen3-235B-A22B-FP8` | ~120 GB | MoE extractor + adjudicator (FP8) | h100 |
 | `BAAI/bge-m3` | ~2.3 GB | Embeddings (dense + sparse) | All |
 | `BAAI/bge-reranker-v2-m3` | ~2.3 GB | Reranker | All |
 | Docling models | ~360 MB (auto-downloaded) | PDF table/layout parsing | All |
 
-**First-time download: ~33 GB (Colab tier) or ~65 GB (H100 tier).**
+**First-time download: ~33 GB (Colab tier) or ~125 GB (H100 tier with FP8).**
+
+> **Note on 235B model size:** The base BF16 weights for Qwen3-235B-A22B are ~470 GB
+> (118 shards x ~4 GB each). You need the FP8 quantized variant (`Qwen3-235B-A22B-FP8`,
+> ~120 GB) to fit on a single H100 80GB, or use multi-GPU tensor parallelism for BF16.
 
 ---
 
@@ -310,8 +314,11 @@ huggingface-cli download Qwen/Qwen3-8B
 
 **H100 80GB (tier: h100):**
 ```bash
-# MoE extractor + adjudicator (~60 GB)
-huggingface-cli download Qwen/Qwen3-235B-A22B
+# MoE extractor + adjudicator — use FP8 variant to fit on single H100
+huggingface-cli download Qwen/Qwen3-235B-A22B-FP8    # ~120 GB (FP8 quantized)
+
+# OR if you have multi-GPU (2x+ H100):
+# huggingface-cli download Qwen/Qwen3-235B-A22B      # ~470 GB (BF16, needs tensor-parallel)
 ```
 
 **Or use the Colab helper** (downloads to Google Drive automatically):
@@ -336,8 +343,8 @@ Without this, Docling auto-downloads on first PDF parse (~30s extra).
 | GPU | VRAM | Model | max-model-len | gpu-memory-utilization |
 |-----|------|-------|---------------|----------------------|
 | A100 | 40 GB | `Qwen/Qwen3-14B` | `16384` | `0.95` |
-| A100 | 80 GB | `Qwen/Qwen3-235B-A22B` | `32768` | `0.90` |
-| H100 | 80 GB | `Qwen/Qwen3-235B-A22B` | `32768` | `0.90` |
+| A100 | 80 GB | `Qwen/Qwen3-235B-A22B-FP8` | `32768` | `0.90` |
+| H100 | 80 GB | `Qwen/Qwen3-235B-A22B-FP8` | `32768` | `0.90` |
 
 ### 3b. Start vLLM
 
@@ -349,7 +356,7 @@ python setup_vllm.py --set-env
 
 # Or specify a tier explicitly
 python setup_vllm.py --tier colab_a100 --set-env      # A100 40GB → Qwen3-14B
-python setup_vllm.py --tier h100 --set-env             # H100 80GB → Qwen3-235B-A22B
+python setup_vllm.py --tier h100 --set-env             # H100 80GB → Qwen3-235B-A22B-FP8
 ```
 
 **What `setup_vllm.py` does automatically:**
@@ -383,7 +390,7 @@ vllm serve Qwen/Qwen3-14B \
 **Manual start — H100 80GB:**
 
 ```bash
-vllm serve Qwen/Qwen3-235B-A22B \
+vllm serve Qwen/Qwen3-235B-A22B-FP8 \
     --host 0.0.0.0 \
     --port 8000 \
     --max-model-len 32768 \
@@ -453,13 +460,13 @@ export ADJUDICATOR_MODEL=Qwen/Qwen3-14B
 export MODEL_TIER=colab_a100
 ```
 
-**H100 80GB (Qwen3-235B-A22B):**
+**H100 80GB (Qwen3-235B-A22B-FP8):**
 ```bash
 export VLLM_BASE_URL=http://localhost:8000/v1
 export ADJUDICATOR_BASE_URL=http://localhost:8000/v1
 export VLLM_API_KEY=local
-export DEFAULT_MODEL=Qwen/Qwen3-235B-A22B
-export ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B
+export DEFAULT_MODEL=Qwen/Qwen3-235B-A22B-FP8
+export ADJUDICATOR_MODEL=Qwen/Qwen3-235B-A22B-FP8
 export MODEL_TIER=h100
 ```
 
@@ -747,7 +754,7 @@ before registering, producing the unhelpful `{}` error.
 Fix: disable V1 and use eager mode:
 ```bash
 export VLLM_USE_V1=0
-vllm serve Qwen/Qwen3-235B-A22B --enforce-eager ...
+vllm serve Qwen/Qwen3-235B-A22B-FP8 --enforce-eager ...
 ```
 
 `setup_vllm.py` sets both of these automatically.
@@ -800,4 +807,4 @@ export RETRIEVAL_FP16=false                             # Disable fp16 (required
 |------|--------------|-------------------|----------|
 | `colab_a100` | Qwen/Qwen3-14B | Qwen/Qwen3-8B | A100 40GB (Colab Pro) |
 | `colab_a100_single` | Qwen/Qwen3-14B | Qwen/Qwen3-14B | A100 40GB (simpler) |
-| `h100` | Qwen/Qwen3-235B-A22B | Qwen/Qwen3-235B-A22B | H100 80GB (best quality) |
+| `h100` | Qwen/Qwen3-235B-A22B-FP8 | Qwen/Qwen3-235B-A22B-FP8 | H100 80GB (best quality) |

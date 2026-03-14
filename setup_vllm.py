@@ -9,14 +9,14 @@ Detects GPU compute capability and works around known issues:
 
 GPU-aware model auto-selection:
 - A100 40GB: Qwen3-14B (fits in VRAM, good extraction quality)
-- A100 80GB / H100: Qwen3-235B-A22B (MoE, best quality)
+- A100 80GB / H100: Qwen3-235B-A22B-FP8 (MoE, best quality)
 - Override with --model flag
 
 Usage (in a notebook cell or terminal):
     python setup_vllm.py                     # auto-detect GPU + pick model
     python setup_vllm.py --port 8001         # custom port
     python setup_vllm.py --model Qwen/Qwen3-14B           # Colab A100 40GB
-    python setup_vllm.py --model Qwen/Qwen3-235B-A22B     # MoE (H100)
+    python setup_vllm.py --model Qwen/Qwen3-235B-A22B-FP8  # MoE (H100)
     python setup_vllm.py --tier colab_a100                 # use tier preset
 """
 
@@ -131,7 +131,7 @@ def pick_model_for_gpu(gpu_name, vram_gb):
         return "Qwen/Qwen3-14B"  # safe default
     if vram_gb >= 70:
         # H100 80GB or A100 80GB — can run the full MoE
-        return "Qwen/Qwen3-235B-A22B"
+        return "Qwen/Qwen3-235B-A22B-FP8"
     if vram_gb >= 30:
         # A100 40GB — Qwen3-14B fits comfortably in FP16 (~28GB)
         return "Qwen/Qwen3-14B"
@@ -206,12 +206,16 @@ def main():
         print(f"[setup_vllm] Total VRAM: {vram_gb:.0f} GiB")
 
     # ── Resolve model from tier / auto-detect ───────────────────────
+    # Priority: --model (explicit) > --tier preset > auto-detect from VRAM
     if args.tier:
         from protocol_spec_assist.serving.model_client import MODEL_TIERS
         tier = MODEL_TIERS[args.tier]
-        model = tier["default_model"]
+        # --model overrides the tier's default model (e.g. Drive path)
+        model = args.model if args.model else tier["default_model"]
         gpu_mem_util = args.gpu_memory_utilization or tier["gpu_memory_utilization"]
         print(f"[setup_vllm] Tier: {args.tier} — {tier['description']}")
+        if args.model:
+            print(f"[setup_vllm] Model overridden to: {args.model}")
     elif args.model:
         model = args.model
         gpu_mem_util = args.gpu_memory_utilization or 0.95
