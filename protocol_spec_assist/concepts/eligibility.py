@@ -30,7 +30,12 @@ PROMPT_VERSION = "0.4.0"
 
 class CriterionInventory(BaseModel):
     """Pass 1: lightweight inventory of all criteria found."""
+    chain_of_thought: str = Field(
+        description="Think step by step: scan the protocol text for eligibility criteria. "
+        "List the distinct criteria you can identify before structuring them."
+    )
     class CriterionStub(BaseModel):
+        reasoning: str = Field(description="Brief explanation of why this is an eligibility criterion")
         chunk_id: Optional[str] = None
         criterion_label: str = Field(description="Short label, e.g. 'Age >= 18'")
         domain: str = Field(
@@ -51,6 +56,9 @@ inventory — just the label, domain, and confidence for each criterion.
 Inclusion criteria define who is eligible for the study (age, diagnosis,
 enrollment requirements, etc.).
 
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing criteria.
+Think step by step — identify relevant passages and assess whether each is truly a distinct criterion.
+
 Rules:
 - List EVERY distinct inclusion criterion — do not merge separate criteria.
 - Classify each by domain: demographic, clinical, treatment, enrollment, other.
@@ -68,6 +76,9 @@ inventory — just the label, domain, and confidence for each criterion.
 Exclusion criteria define who is NOT eligible (prior treatments, comorbidities,
 data quality requirements, etc.).
 
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing criteria.
+Think step by step — identify relevant passages and assess whether each is truly a distinct criterion.
+
 Rules:
 - List EVERY distinct exclusion criterion — do not merge separate criteria.
 - Classify each by domain: demographic, clinical, treatment, enrollment, other.
@@ -84,6 +95,7 @@ Rules:
 
 class CriterionDetail(BaseModel):
     """Pass 2: full detail for a single criterion."""
+    reasoning: str
     quoted_text: str = Field(description="Exact quoted text from the protocol")
     operational_detail: Optional[str] = Field(
         default=None,
@@ -95,13 +107,15 @@ class CriterionDetail(BaseModel):
     )
     explicit: ExplicitType
     confidence: float = Field(ge=0.0, le=1.0)
-    reasoning: str
 
 
 SYSTEM_PROMPT_DETAIL = """You are an expert RWE protocol analyst.
 Extract the FULL detail for exactly ONE criterion from the protocol text.
 
 The criterion to extract: "{criterion_label}" (domain: {domain})
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing criteria.
+Think step by step — identify relevant passages and assess whether each is truly a distinct criterion.
 
 Rules:
 - Find the exact passage that defines this criterion.
@@ -117,7 +131,12 @@ Rules:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class InclusionCriteriaExtraction(BaseModel):
+    chain_of_thought: str = Field(
+        description="Think step by step about the eligibility criteria in the protocol text. "
+        "Identify key inclusion/exclusion passages and assess how they map to operational criteria."
+    )
     class CriterionExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         criterion_label: str = Field(description="Short label, e.g. 'Age requirement'")
@@ -135,7 +154,6 @@ class InclusionCriteriaExtraction(BaseModel):
         section_title: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
 
     criteria: list[CriterionExtraction]
     contradictions_found: bool
@@ -144,7 +162,12 @@ class InclusionCriteriaExtraction(BaseModel):
 
 
 class ExclusionCriteriaExtraction(BaseModel):
+    chain_of_thought: str = Field(
+        description="Think step by step about the eligibility criteria in the protocol text. "
+        "Identify key inclusion/exclusion passages and assess how they map to operational criteria."
+    )
     class CriterionExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         criterion_label: str = Field(description="Short label, e.g. 'Prior cancer'")
@@ -162,7 +185,6 @@ class ExclusionCriteriaExtraction(BaseModel):
         section_title: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
 
     criteria: list[CriterionExtraction]
     contradictions_found: bool

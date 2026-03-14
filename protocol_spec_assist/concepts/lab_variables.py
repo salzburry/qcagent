@@ -50,7 +50,10 @@ STATIC_TEMPLATE = [
 
 
 class LabVariablesExtraction(BaseModel):
+    chain_of_thought: str = Field(description="Think step by step about the lab variables in the protocol text. Identify which lab variables are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
+
     class VariableExtraction(BaseModel):
+        reasoning: str = Field(description="Why this lab variable is relevant and how it was identified")
         chunk_id: Optional[str] = Field(default=None)
         time_period: str = Field(description="e.g. PRE_INT (baseline labs before index)")
         variable_name: str = Field(description="e.g. LABNEU, LABNEUV, LABNEUDT, LABPLA, LABHEMV")
@@ -62,7 +65,6 @@ class LabVariablesExtraction(BaseModel):
         sponsor_term: Optional[str] = None
         explicit: ExplicitType = "explicit"
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str = ""
 
     variables: list[VariableExtraction] = Field(default_factory=list)
     contradictions_found: bool = False
@@ -84,6 +86,9 @@ For each variable, define:
 - How to select the closest record to index date
 - Unit standardization (which function / target units)
 - Whether to take lowest or highest value when multiple records on same date
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing variables.
+Think step by step — identify relevant passages and assess what the protocol explicitly requires.
 
 Rules:
 - Extract ONLY lab variables, NOT biomarkers or clinical characteristics.

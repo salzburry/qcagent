@@ -32,7 +32,16 @@ PROMPT_VERSION = "0.5.0"
 class SourceDataPrepExtraction(BaseModel):
     """Schema for source data preparation issue extraction."""
 
+    chain_of_thought: str = Field(
+        description="Think step by step about data preparation issues. "
+        "Consider what the protocol requires vs what the data source provides, "
+        "and identify gaps, mapping needs, and derivation challenges."
+    )
+
     class PrepIssue(BaseModel):
+        reasoning: str = Field(
+            description="Why this action is appropriate"
+        )
         chunk_id: Optional[str] = None
         quoted_text: str = Field(
             description="Protocol text that triggers this preparation issue, "
@@ -47,9 +56,6 @@ class SourceDataPrepExtraction(BaseModel):
         )
         action: str = Field(
             description="Recommended action, e.g. 'Set to Missing' or 'Derive from ICD codes'"
-        )
-        reasoning: str = Field(
-            description="Why this action is appropriate"
         )
         confidence: float = Field(ge=0.0, le=1.0)
 
@@ -75,6 +81,9 @@ building analytic files. They typically involve:
 
 ## Data source context:
 {source_context}
+
+IMPORTANT: Use the chain_of_thought field to reason about source data issues BEFORE listing them.
+Think step by step — compare protocol requirements against known data source capabilities.
 
 Rules:
 - Focus on issues that a PROGRAMMER would need to resolve.

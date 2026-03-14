@@ -47,7 +47,14 @@ CONCEPT_SP = "study_period"
 class DataPrepExtraction(BaseModel):
     """Structured extraction targeting real Data Prep tab rows."""
 
+    chain_of_thought: str = Field(
+        description="Think step by step about the study design dates and time periods. "
+        "Identify date-related phrases, classify them as important dates vs time periods, "
+        "and note the data source if mentioned."
+    )
+
     class ImportantDateExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         variable: str = Field(
@@ -63,9 +70,9 @@ class DataPrepExtraction(BaseModel):
         section_title: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
 
     class TimePeriodExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         time_period: str = Field(
@@ -81,7 +88,6 @@ class DataPrepExtraction(BaseModel):
         section_title: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
 
     important_dates: list[ImportantDateExtraction]
     time_periods: list[TimePeriodExtraction]
@@ -105,14 +111,18 @@ class DataPrepExtraction(BaseModel):
 
 # Legacy schema kept for backward compatibility with existing evidence packs
 class StudyPeriodExtraction(BaseModel):
+    chain_of_thought: str = Field(
+        description="Think step by step about the study period and design elements in the protocol."
+    )
+
     class CandidateExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         section_title: str
         sponsor_term: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
 
     candidates: list[CandidateExtraction]
     study_period_start: Optional[str] = None
@@ -159,6 +169,9 @@ The user prompt may include a "PRE-MINED DATE CANDIDATES" section listing
 date-like phrases found locally in the protocol text. Use these as hints —
 classify each relevant candidate into the correct variable. You may also
 find dates/periods NOT in the pre-mined list.
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE structuring your answer.
+Think step by step — identify relevant passages first, then classify them.
 
 Rules:
 - For each date/period, provide the OPERATIONAL DEFINITION with date arithmetic
@@ -441,7 +454,14 @@ CONCEPT_CR = "censoring_rules"
 
 
 class CensoringRulesExtraction(BaseModel):
+    chain_of_thought: str = Field(
+        description="Think step by step about the censoring rules in the protocol. "
+        "Identify events that end follow-up, distinguish between different censoring reasons, "
+        "and note which endpoints each rule applies to."
+    )
+
     class RuleExtraction(BaseModel):
+        reasoning: str
         chunk_id: Optional[str] = None
         quoted_text: str
         rule_label: str = Field(description="Short label, e.g. 'Death censoring'")
@@ -456,7 +476,6 @@ class CensoringRulesExtraction(BaseModel):
         sponsor_term: str
         explicit: ExplicitType
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str
 
     rules: list[RuleExtraction]
     contradictions_found: bool
@@ -476,6 +495,9 @@ the primary event. They may include:
 - Competing events (for cause-specific analyses)
 - Administrative censoring at a fixed date
 - Treatment switching / discontinuation
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE structuring your answer.
+Think step by step — identify relevant passages first, then classify them.
 
 Rules:
 - Extract EVERY distinct censoring rule.

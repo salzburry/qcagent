@@ -32,7 +32,10 @@ STATIC_TEMPLATE = [
 
 
 class ClinicalCharsExtraction(BaseModel):
+    chain_of_thought: str = Field(description="Think step by step about the clinical characteristics in the protocol text. Identify which clinical characteristic variables are explicitly mentioned, note any specific definitions, and assess your confidence before structuring the answer.")
+
     class VariableExtraction(BaseModel):
+        reasoning: str = Field(description="Why this variable is relevant and how it was identified")
         chunk_id: Optional[str] = Field(default=None)
         time_period: str = Field(description="e.g. STUDY_PD, PRE_INT, ASSESS_ECOG, ASSESS_BSYMPT")
         variable_name: str = Field(description="e.g. ECOG, STAGE, CCI, DLBCLFL, BSYMPT, BULKY")
@@ -44,7 +47,6 @@ class ClinicalCharsExtraction(BaseModel):
         sponsor_term: Optional[str] = None
         explicit: ExplicitType = "explicit"
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str = ""
 
     variables: list[VariableExtraction] = Field(default_factory=list)
     contradictions_found: bool = False
@@ -67,6 +69,9 @@ Clinical characteristics may include (depending on disease area):
 
 For each variable provide time_period, variable_name, label, values, definition,
 code_lists_group, additional_notes. Include both categorical and numeric coded versions.
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE listing variables.
+Think step by step — identify relevant passages and assess what the protocol explicitly requires.
 
 Rules:
 - Extract ONLY variables that the protocol ACTUALLY DEFINES or REQUIRES.

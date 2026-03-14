@@ -33,6 +33,7 @@ class IndexDateExtraction(BaseModel):
     """Schema-constrained LLM output for index date extraction."""
 
     class CandidateExtraction(BaseModel):
+        reasoning: str = Field(description="Why this snippet supports index date — explain your analysis before giving the structured answer")
         chunk_id: Optional[str] = Field(
             default=None,
             description="chunk_id from the input chunk, for provenance tracking"
@@ -46,8 +47,11 @@ class IndexDateExtraction(BaseModel):
         sponsor_term: str = Field(description="Term used in protocol (e.g. cohort entry)")
         explicit: ExplicitType = Field(description="Whether explicitly stated or inferred")
         confidence: float = Field(ge=0.0, le=1.0)
-        reasoning: str = Field(description="Why this snippet supports index date")
 
+    chain_of_thought: str = Field(
+        description="Think step by step about what index date definitions are present in the protocol text. "
+        "Identify key phrases, assess whether they are explicit or inferred, and note any contradictions."
+    )
     candidates: list[CandidateExtraction] = Field(
         description="All candidate index date definitions found, ranked by confidence"
     )
@@ -69,6 +73,9 @@ Your task is to identify the index date (cohort entry date) definition from prot
 The index date is the anchor date used to define cohort entry — it may be called:
 "index date", "cohort entry", "treatment initiation", "first qualifying event",
 "first dispensing", "line of therapy start", or similar.
+
+IMPORTANT: Use the chain_of_thought field to reason about the protocol text BEFORE filling in candidates.
+Think step by step — identify relevant passages, assess their specificity, and consider alternative interpretations.
 
 Rules:
 - Extract ONLY what the protocol text actually says. Do not invent definitions.
