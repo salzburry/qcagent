@@ -9,12 +9,17 @@ lab_variables, treatment_variables) and the candidate-based finders
 
 from __future__ import annotations
 import hashlib
+import logging
 from typing import Optional
 
 from ..schemas.evidence import EvidencePack, EvidenceCandidate
 from ..retrieval.search import RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..data_sources.registry import resolve_static_template
+from .evidence_auditor import audit_candidates, format_candidates_for_audit, AuditResult
+from .evidence_merger import merge_candidates, MergeResult
+
+logger = logging.getLogger(__name__)
 
 
 # ── Common constants ─────────────────────────────────────────────────────────
@@ -22,6 +27,19 @@ from ..data_sources.registry import resolve_static_template
 CONFIDENCE_THRESHOLD = 0.65
 LOW_RETRIEVAL_THRESHOLD = 3
 RERANK_SCORE_FLOOR = 0.2
+
+# Concepts that get author→auditor→merger treatment
+# (high-value, error-prone, ambiguous temporal/definitional semantics)
+AUDITED_CONCEPTS = {
+    "index_date",
+    "follow_up_end",
+    "study_period",
+    "censoring_rules",
+    "cohort_definitions",
+    "primary_endpoint",
+    "eligibility_inclusion",
+    "eligibility_exclusion",
+}
 
 
 # ── Context building ────────────────────────────────────────────────────────
@@ -86,6 +104,50 @@ def try_adjudicator(
     except Exception as e:
         print(f"[{finder_name}] Adjudicator unavailable ({e}), keeping first-pass result.")
         return extraction, None, False
+
+
+# ── Author → Auditor → Merger ─────────────────────────────────────────────────
+
+def audit_and_merge(
+    client: LocalModelClient,
+    candidates: list[EvidenceCandidate],
+    extraction_candidates: list,
+    chunks_text: str,
+    concept: str,
+) -> tuple[list[EvidenceCandidate], bool, list[str]]:
+    """Run evidence audit and deterministic merge on candidates.
+
+    Only called for AUDITED_CONCEPTS. Template-based finders skip this.
+
+    Args:
+        client: Model client
+        candidates: EvidenceCandidate list (already built from extraction)
+        extraction_candidates: Raw extraction candidate objects (for formatting)
+        chunks_text: Original chunk text for the auditor to verify against
+        concept: Concept name
+
+    Returns:
+        (final_candidates, has_contradictions, auditor_notes)
+    """
+    if concept not in AUDITED_CONCEPTS:
+        return candidates, False, []
+
+    if not candidates:
+        return candidates, False, []
+
+    # Format candidates for the auditor
+    candidates_text = format_candidates_for_audit(extraction_candidates, concept)
+
+    # Run auditor
+    audit = audit_candidates(client, candidates_text, chunks_text, concept)
+
+    # Deterministic merge
+    result = merge_candidates(candidates, audit, concept)
+
+    # Final list = accepted + repaired (rejected are dropped)
+    final = result.accepted + result.repaired
+
+    return final, result.has_contradictions, result.auditor_notes
 
 
 # ── Template merge ───────────────────────────────────────────────────────────

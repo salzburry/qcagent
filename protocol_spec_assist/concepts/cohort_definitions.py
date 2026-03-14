@@ -19,7 +19,7 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
-from .base import build_context, compute_low_signal, try_adjudicator
+from .base import build_context, compute_low_signal, try_adjudicator, audit_and_merge
 
 CONCEPT = "cohort_definitions"
 FINDER_VERSION = "0.5.0"
@@ -151,8 +151,20 @@ def find_cohort_definitions(
 
     pack = _build_cohort_pack(protocol_id, extraction, chunks, model_used, used_adjudicator)
 
+    # Author → Auditor → Merger
+    audited, audit_contradictions, auditor_notes = audit_and_merge(
+        client, pack.candidates, extraction.cohorts, context, CONCEPT,
+    )
+    pack.candidates = audited
+    if audit_contradictions:
+        pack.contradictions_found = True
+    if auditor_notes:
+        meta = pack.concept_metadata or {}
+        meta["_auditor_notes"] = auditor_notes
+        pack.concept_metadata = meta
+
     print(f"[CohortDefinitionFinder] Done. "
-          f"{len(pack.candidates)} cohorts | "
+          f"{len(audited)} cohorts (from {len(extraction.cohorts)} authored) | "
           f"confidence={extraction.overall_confidence:.2f}")
 
     return pack

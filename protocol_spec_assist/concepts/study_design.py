@@ -28,7 +28,7 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
-from .base import CONFIDENCE_THRESHOLD, build_context, compute_low_signal, try_adjudicator
+from .base import CONFIDENCE_THRESHOLD, build_context, compute_low_signal, try_adjudicator, audit_and_merge
 
 FINDER_VERSION = "0.5.0"
 PROMPT_VERSION = "0.5.0"
@@ -324,10 +324,23 @@ def find_data_prep_dates(
 
     pack = _build_data_prep_pack(protocol_id, extraction, chunks, model_used, used_adjudicator)
 
+    # Author → Auditor → Merger for study_period
+    all_extraction_items = list(extraction.important_dates) + list(extraction.time_periods)
+    audited, audit_contradictions, auditor_notes = audit_and_merge(
+        client, pack.candidates, all_extraction_items, context, CONCEPT_SP,
+    )
+    pack.candidates = audited
+    if audit_contradictions:
+        pack.contradictions_found = True
+    if auditor_notes:
+        meta = pack.concept_metadata or {}
+        meta["_auditor_notes"] = auditor_notes
+        pack.concept_metadata = meta
+
     n_dates = len(extraction.important_dates)
     n_periods = len(extraction.time_periods)
     print(f"[DataPrepFinder] Pass 2: "
-          f"{n_dates} dates + {n_periods} periods | "
+          f"{n_dates} dates + {n_periods} periods → {len(audited)} after audit | "
           f"confidence={extraction.overall_confidence:.2f} | "
           f"data_source={extraction.data_source or 'not found'}")
 
@@ -563,8 +576,20 @@ def find_censoring_rules(
         protocol_id, extraction, chunks, model_used, used_adjudicator,
     )
 
+    # Author → Auditor → Merger
+    audited, audit_contradictions, auditor_notes = audit_and_merge(
+        client, pack.candidates, extraction.rules, context, CONCEPT_CR,
+    )
+    pack.candidates = audited
+    if audit_contradictions:
+        pack.contradictions_found = True
+    if auditor_notes:
+        meta = pack.concept_metadata or {}
+        meta["_auditor_notes"] = auditor_notes
+        pack.concept_metadata = meta
+
     print(f"[CensoringRulesFinder] Done. "
-          f"{len(pack.candidates)} rules | "
+          f"{len(audited)} rules (from {len(extraction.rules)} authored) | "
           f"confidence={extraction.overall_confidence:.2f}")
 
     return pack

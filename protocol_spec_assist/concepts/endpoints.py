@@ -12,7 +12,7 @@ from ..schemas.evidence import EvidencePack, EvidenceCandidate, ExplicitType
 from ..retrieval.search import ProtocolIndex, RetrievedChunk
 from ..serving.model_client import LocalModelClient
 from ..ta_packs.loader import TAPack, build_query_bank, get_hotspot_warning, get_section_priority
-from .base import CONFIDENCE_THRESHOLD, build_context, compute_low_signal, try_adjudicator
+from .base import CONFIDENCE_THRESHOLD, build_context, compute_low_signal, try_adjudicator, audit_and_merge
 
 FINDER_VERSION = "0.3.0"
 PROMPT_VERSION = "0.3.0"
@@ -118,12 +118,22 @@ def find_follow_up_end(
     # Build pack first to get stable candidate_ids, then attach metadata
     pack = _build_pack(CONCEPT_FUE, protocol_id, extraction, chunks, model_used, used_adjudicator)
 
+    # Author → Auditor → Merger
+    audited, audit_contradictions, auditor_notes = audit_and_merge(
+        client, pack.candidates, extraction.candidates, context, CONCEPT_FUE,
+    )
+    pack.candidates = audited
+    if audit_contradictions:
+        pack.contradictions_found = True
+
     # Attach concept-specific metadata keyed by candidate_id (not order-dependent)
     candidate_metadata = {}
     for ec, candidate in zip(extraction.candidates, pack.candidates):
         candidate_metadata[candidate.candidate_id] = {
             "rule_type": ec.rule_type,
         }
+    if auditor_notes:
+        candidate_metadata["_auditor_notes"] = auditor_notes
     pack.concept_metadata = {"per_candidate": candidate_metadata}
 
     return pack
@@ -233,6 +243,14 @@ def find_primary_endpoint(
     # Build pack first to get stable candidate_ids, then attach metadata
     pack = _build_pack(CONCEPT_PE, protocol_id, extraction, chunks, model_used, used_adjudicator)
 
+    # Author → Auditor → Merger
+    audited, audit_contradictions, auditor_notes = audit_and_merge(
+        client, pack.candidates, extraction.candidates, context, CONCEPT_PE,
+    )
+    pack.candidates = audited
+    if audit_contradictions:
+        pack.contradictions_found = True
+
     # Attach concept-specific metadata keyed by candidate_id (not order-dependent)
     candidate_metadata = {}
     for ec, candidate in zip(extraction.candidates, pack.candidates):
@@ -241,6 +259,8 @@ def find_primary_endpoint(
             "components": ec.components,
             "time_to_event": ec.time_to_event,
         }
+    if auditor_notes:
+        candidate_metadata["_auditor_notes"] = auditor_notes
     pack.concept_metadata = {"per_candidate": candidate_metadata}
 
     return pack
