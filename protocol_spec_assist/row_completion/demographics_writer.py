@@ -37,7 +37,7 @@ class DemographicsWriter(RowWriter):
             "time_period": "INDEX",
         },
         "ETHNICITY": {
-            "variables": ["ETHNIC", "ETHNICN"],
+            "variables": ["ETH", "ETHN"],
             "label": "Ethnicity",
             "time_period": "INDEX",
         },
